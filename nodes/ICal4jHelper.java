@@ -206,15 +206,21 @@ final class ICal4jHelper {
             if (!value.contains("T")) {
                 return new net.fortuna.ical4j.model.Date(value);
             }
-            DateTime dt = new DateTime(value);
             if (!value.endsWith("Z") && tzid != null && !tzid.isEmpty()) {
                 TimeZone tz = TZ_REGISTRY.getTimeZone(tzid);
                 if (tz == null) {
                     throw new IcalException("INVALID_ARGUMENT", "unknown timezone id: " + tzid);
                 }
-                dt.setTimeZone(tz);
+                // CRITICAL FIX: parsing with the (String) constructor and then calling
+                // setTimeZone(tz) afterward does NOT reinterpret the wall-clock digits
+                // as belonging to tz — it preserves the absolute instant parsed under
+                // the JVM's default zone and re-renders it in tz, silently shifting the
+                // time by the offset delta between the two zones. The (String,
+                // TimeZone) constructor parses the literal digits AS wall-clock time in
+                // the given zone, which is what a TZID-anchored DTSTART/DTEND means.
+                return new DateTime(value, tz);
             }
-            return dt;
+            return new DateTime(value);
         } catch (IcalException e) {
             throw e;
         } catch (Exception e) {
@@ -440,13 +446,22 @@ final class ICal4jHelper {
 
     /**
      * Some ical4j component constructors auto-populate a DTSTAMP with the current
-     * wall-clock time as a convenience default. This package promises determinism
-     * (no wall-clock reads), so when the caller left `dtstamp` empty, strip whatever
-     * DTSTAMP ended up on the built component rather than silently emitting "now".
+     * wall-clock time as a convenience default — including, redundantly, when a
+     * component is RECONSTRUCTED via the (PropertyList, ComponentList) constructor
+     * to attach VALARM children (see buildEvent/buildTodo), which can leave BOTH an
+     * auto-generated DTSTAMP and the caller-supplied one present at once (invalid
+     * .ics — DTSTAMP MUST NOT occur more than once). This package promises
+     * determinism (no wall-clock reads) and exactly the DTSTAMP the caller asked
+     * for, so this is called ONCE, last, after any such reconstruction: it removes
+     * every DTSTAMP already on the component, then re-adds exactly one if (and only
+     * if) the caller supplied a value — never trusting whatever ical4j left behind.
      */
-    private static void stripAutoDtstampIfCallerOmitted(Component c, String callerDtstamp) {
-        if (callerDtstamp == null || callerDtstamp.isEmpty()) {
-            c.getProperties().removeIf(p -> Property.DTSTAMP.equals(p.getName()));
+    private static void canonicalizeDtstamp(Component c, String callerDtstamp) throws IcalException {
+        c.getProperties().removeIf(p -> Property.DTSTAMP.equals(p.getName()));
+        if (callerDtstamp != null && !callerDtstamp.isEmpty()) {
+            DtStamp p = new DtStamp();
+            setDateProperty(p, callerDtstamp, "");
+            c.getProperties().add(p);
         }
     }
 
@@ -534,11 +549,6 @@ final class ICal4jHelper {
                 setDateProperty(p, e.getLastModified(), "");
                 props.add(p);
             }
-            if (!e.getDtstamp().isEmpty()) {
-                DtStamp p = new DtStamp();
-                setDateProperty(p, e.getDtstamp(), "");
-                props.add(p);
-            }
             if (!e.getTransparency().isEmpty()) props.add(new Transp(e.getTransparency()));
             if (!e.getClassification().isEmpty()) props.add(new Clazz(e.getClassification()));
             if (!e.getUrl().isEmpty()) {
@@ -555,7 +565,7 @@ final class ICal4jHelper {
                 for (ICalAlarm a : e.getAlarmsList()) alarms.add(buildAlarm(a));
                 v = new VEvent(props, alarms);
             }
-            stripAutoDtstampIfCallerOmitted(v, e.getDtstamp());
+            canonicalizeDtstamp(v, e.getDtstamp());
             return v;
         } catch (IcalException ex) {
             throw ex;
@@ -667,11 +677,6 @@ final class ICal4jHelper {
                 setDateProperty(p, t.getLastModified(), "");
                 props.add(p);
             }
-            if (!t.getDtstamp().isEmpty()) {
-                DtStamp p = new DtStamp();
-                setDateProperty(p, t.getDtstamp(), "");
-                props.add(p);
-            }
             if (!t.getClassification().isEmpty()) props.add(new Clazz(t.getClassification()));
             if (!t.getUrl().isEmpty()) {
                 try {
@@ -685,7 +690,7 @@ final class ICal4jHelper {
                 for (ICalAlarm a : t.getAlarmsList()) alarms.add(buildAlarm(a));
                 v = new VToDo(props, alarms);
             }
-            stripAutoDtstampIfCallerOmitted(v, t.getDtstamp());
+            canonicalizeDtstamp(v, t.getDtstamp());
             return v;
         } catch (IcalException ex) {
             throw ex;
@@ -757,11 +762,6 @@ final class ICal4jHelper {
                 setDateProperty(p, j.getLastModified(), "");
                 props.add(p);
             }
-            if (!j.getDtstamp().isEmpty()) {
-                DtStamp p = new DtStamp();
-                setDateProperty(p, j.getDtstamp(), "");
-                props.add(p);
-            }
             if (!j.getClassification().isEmpty()) props.add(new Clazz(j.getClassification()));
             if (!j.getUrl().isEmpty()) {
                 try {
@@ -770,7 +770,7 @@ final class ICal4jHelper {
                     throw new IcalException("INVALID_ARGUMENT", "invalid url \"" + j.getUrl() + "\": " + ex.getMessage(), ex);
                 }
             }
-            stripAutoDtstampIfCallerOmitted(v, j.getDtstamp());
+            canonicalizeDtstamp(v, j.getDtstamp());
             return v;
         } catch (IcalException ex) {
             throw ex;

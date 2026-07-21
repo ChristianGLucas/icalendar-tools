@@ -143,6 +143,71 @@ public class BuildICalendarTest {
     }
 
     @Test
+    public void testBuildICalendar_alarmPlusExplicitDtstampProducesExactlyOneDtstamp() {
+        // Regression test (independent review, round 1): reconstructing a VEvent via
+        // the (PropertyList, ComponentList) constructor to attach VALARM children
+        // re-triggers ical4j's own wall-clock DTSTAMP auto-population IN ADDITION TO
+        // whatever DTSTAMP the caller supplied — a first pass emitted two DTSTAMP
+        // lines whenever an event had both an alarm and a caller-supplied dtstamp,
+        // which is invalid RFC 5545 (DTSTAMP MUST NOT occur more than once) and a
+        // combination any real Parse -> modify -> Build workflow hits, since
+        // ParseICalendar always returns the source's dtstamp.
+        AxiomContext ax = new TestContext();
+        ICalEvent event = ICalEvent.newBuilder()
+                .setUid("evt-dup@example.com")
+                .setSummary("Has Alarm And Dtstamp")
+                .setDtstart("20260801T100000Z")
+                .setDtstamp("20260715T080000Z")
+                .addAlarms(ICalAlarm.newBuilder().setAction("DISPLAY").setDescription("Reminder").setTrigger("-PT15M").build())
+                .build();
+        ICalCalendar cal = ICalCalendar.newBuilder().addEvents(event).build();
+
+        ICalTextOutput result = BuildICalendar.buildICalendar(ax, cal);
+        assertFalse(result.hasError(), "unexpected error: " + result.getError());
+        String ics = result.getIcsText();
+        int dtstampCount = ics.split("DTSTAMP", -1).length - 1;
+        assertEquals(1, dtstampCount, "expected exactly one DTSTAMP line, got:\n" + ics);
+        assertTrue(ics.contains("DTSTAMP:20260715T080000Z"), ics);
+
+        // The output must itself be spec-valid — feed it through our own validator.
+        gen.Messages.ICalValidationResult validation = ValidateICalendar.validateICalendar(ax,
+                ICalTextInput.newBuilder().setIcsText(ics).build());
+        assertTrue(validation.getValid(), "built .ics failed validation: " + validation.getErrorsList());
+    }
+
+    @Test
+    public void testBuildICalendar_tzidAnchoredTimeIsNotShiftedByServerDefaultZone() {
+        // Regression test (independent review, round 1): parsing the wall-clock
+        // digits with the JVM default zone and THEN calling setTimeZone(tz)
+        // preserves the absolute instant and re-renders it in tz — it does not
+        // reinterpret the digits as belonging to tz. A first pass did exactly that
+        // and silently shifted a TZID-anchored DTSTART by the offset delta between
+        // the server's default zone and the caller's requested zone (e.g. 14:00
+        // New York became 16:00 on a Denver-zoned build host — a 2-hour silent
+        // corruption with no error).
+        AxiomContext ax = new TestContext();
+        ICalEvent event = ICalEvent.newBuilder()
+                .setUid("evt-tz@example.com")
+                .setSummary("TZ Test")
+                .setDtstart("20260601T140000")
+                .setDtstartTzid("America/New_York")
+                .setDtstamp("20260601T100000Z")
+                .build();
+        ICalCalendar cal = ICalCalendar.newBuilder().addEvents(event).build();
+
+        ICalTextOutput result = BuildICalendar.buildICalendar(ax, cal);
+        assertFalse(result.hasError(), "unexpected error: " + result.getError());
+        String ics = result.getIcsText();
+        // The literal wall-clock digits the caller supplied MUST survive unchanged.
+        assertTrue(ics.contains("TZID=America/New_York:20260601T140000"), ics);
+
+        ICalCalendar reparsed = ParseICalendar.parseICalendar(ax, ICalTextInput.newBuilder().setIcsText(ics).build());
+        assertFalse(reparsed.hasError());
+        assertEquals("20260601T140000", reparsed.getEvents(0).getDtstart());
+        assertEquals("America/New_York", reparsed.getEvents(0).getDtstartTzid());
+    }
+
+    @Test
     public void testBuildICalendar_roundTripsThroughParse() {
         AxiomContext ax = new TestContext();
         ICalCalendar original = sampleCalendar();
