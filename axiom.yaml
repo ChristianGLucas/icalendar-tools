@@ -1,0 +1,89 @@
+name: christiangeorgelucas/icalendar-tools
+version: 0.1.0
+language: java
+description: >-
+  Composable Axiom iCalendar (RFC 5545) CALENDAR-FILE nodes — parse a whole
+  .ics VCALENDAR document into structured VEVENTs/VTODOs/VJOURNALs (summary,
+  start/end, location, organizer/attendees, status, UID, RRULE string,
+  VALARMs, categories), build a valid .ics document back from that same
+  structure, validate a .ics document against the spec, list/filter the
+  VEVENTs in a calendar, and expand a calendar's recurring VEVENTs (RRULE +
+  RDATE + EXDATE together) into concrete occurrences within a caller-supplied
+  window — over a single ICalCalendar envelope, wrapping the BSD-3-Clause
+  reference JVM library ical4j. Offline, deterministic, and distinct from
+  christiangeorgelucas/recurrence-tools, which expands a single bare RRULE
+  string rather than parsing/building whole calendar files.
+author: Christian George Lucas
+license: MIT
+tags:
+    - icalendar
+    - ics
+    - calendar
+    - rfc5545
+    - vevent
+    - vtodo
+    - vjournal
+    - scheduling
+nodes:
+    - name: ParseICalendar
+      input: ICalTextInput
+      output: ICalCalendar
+      description: >-
+        Parse a .ics VCALENDAR document into a structured ICalCalendar: every
+        VEVENT, VTODO, and VJOURNAL with its fields (summary, start/end,
+        location, organizer/attendees, status, UID, RRULE string, VALARMs,
+        categories, ...), plus PRODID/VERSION/CALSCALE/METHOD. Malformed input
+        (not iCalendar at all, or too large) returns a structured error rather
+        than crashing; individual malformed components are preserved as-is
+        (e.g. a missing UID comes back as an empty uid field) rather than
+        silently dropped, so downstream nodes see exactly what the file
+        contained. Input capped at 2 MiB.
+    - name: BuildICalendar
+      input: ICalCalendar
+      output: ICalTextOutput
+      description: >-
+        Generate a valid, RFC 5545-folded .ics VCALENDAR document from a
+        structured ICalCalendar (events/todos/journals) — the reverse of
+        ParseICalendar; Parse(Build(x)) round-trips every field. Fills a
+        default PRODID/VERSION when the caller leaves them empty. Rejects a
+        calendar with zero components, or a component missing its required
+        UID, with a structured error rather than emitting invalid iCalendar.
+        Deterministic: DTSTAMP is emitted only when the caller supplies one —
+        this node never fills it from the wall clock, so the same input
+        always produces byte-identical output.
+    - name: ValidateICalendar
+      input: ICalTextInput
+      output: ICalValidationResult
+      description: >-
+        Validate a .ics document against RFC 5545: reports valid=false with
+        one entry per problem (a parse failure, or a validation rule broken
+        on some component — e.g. a VEVENT missing its required UID or
+        DTSTAMP) rather than throwing. valid=true means the document both
+        parses and passes ical4j's RFC 5545 component validation.
+    - name: ListEvents
+      input: ICalListEventsInput
+      output: ICalEventList
+      description: >-
+        List the VEVENTs in a .ics document, optionally filtered by exact
+        (case-insensitive) category or by overlap with a [window_start,
+        window_end) instant window — leave both filters empty to list every
+        VEVENT. Distinct from ParseICalendar: this returns only VEVENTs
+        (never VTODO/VJOURNAL) and supports server-side filtering instead of
+        the caller filtering the full parse result themselves.
+    - name: ExpandOccurrences
+      input: ICalExpandInput
+      output: ICalOccurrenceList
+      description: >-
+        Expand every VEVENT in a .ics document — combining its RRULE, RDATE,
+        and EXDATE together per RFC 5545 §3.8.5, and passing non-recurring
+        VEVENTs through unchanged — into concrete occurrences that fall
+        inside a caller-supplied [window_start, window_end) instant window,
+        earliest first. Complementary to christiangeorgelucas/recurrence-tools
+        (which expands one bare RRULE string you supply yourself): this
+        operates on every recurring VEVENT already inside a whole calendar
+        file at once. Capped at `limit` occurrences total (default 500, max
+        5000); a dense window flags truncated=true instead of running
+        unbounded.
+build:
+    maven_deps:
+        - org.mnode.ical4j:ical4j:3.2.19

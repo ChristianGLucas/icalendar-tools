@@ -1,0 +1,325 @@
+// This file defines the data contracts (messages) for your Axiom package.
+// Every node's --input and --output refers to a message defined here.
+//
+// Run `axiom create message <Name>` to scaffold a new message below.
+// Run `axiom generate` to compile these definitions into language bindings in gen/.
+//
+// DOCUMENTATION
+//   Comments written directly above a message or field declaration are extracted
+//   automatically at publish time and shown in the Axiom registry as documentation.
+//   Write your descriptions there — no separate doc files needed.
+//
+//   Leading comment  (no blank line before the declaration) → registry description ✓
+//   Detached comment (blank line before the declaration)    → ignored by registry  ✗
+//
+// This file is yours to edit. Axiom only appends new message blocks — it never
+// overwrites or removes content you have written.
+//
+// Vocabulary note: every date/time-valued field in this package is an RFC 5545
+// form string, exactly as it would appear as a property VALUE inside a .ics file
+// (no property name, no leading "DTSTART:"/"TRIGGER:" etc.) — never an epoch
+// number. This mirrors christiangeorgelucas/recurrence-tools, so an ICalEvent's
+// `rrule` + `dtstart` (+ `dtstart_tzid`) drop directly into that package's
+// Recurrence envelope for bare-RRULE expansion. Forms in use here:
+//
+//   DATE           "20260721"              (all-day)
+//   DATE-TIME       "20260721T090000"       (floating, or local to a *_tzid field)
+//   DATE-TIME UTC   "20260721T090000Z"
+//   DURATION        "-PT15M", "P1D"         (VALARM TRIGGER / DURATION)
+
+syntax = "proto3";
+
+package christiangeorgelucas.icalendar_tools;
+
+option java_package = "gen";
+option java_outer_classname = "Messages";
+
+// A structured, deterministic failure. Every output message carries one; it is
+// unset on success. Nodes never throw on bad input — they return this instead.
+message Error {
+  // Stable machine-readable code: INVALID_ICS, INVALID_ARGUMENT, LIMIT_EXCEEDED,
+  // or INTERNAL. INTERNAL means the package itself faulted, not the caller's input.
+  string code = 1;
+  // Human-readable detail naming exactly what was rejected and why.
+  string message = 2;
+}
+
+// An ORGANIZER or ATTENDEE (RFC 5545 §3.8.4.1 / §3.8.4.3). Also used as the
+// ICalEvent/ICalTodo/ICalJournal `organizer` field — `role`,
+// `participation_status`, and `rsvp` are meaningless there and always empty/false.
+message ICalAttendee {
+  // The attendee's address, WITHOUT the "mailto:" scheme prefix, e.g.
+  // "dev1@example.com". Non-mailto CAL-ADDRESS URIs (rare) are kept verbatim.
+  string email = 1;
+  // The CN (common name) parameter, e.g. "Developer One". Empty if absent.
+  string common_name = 2;
+  // ROLE parameter: CHAIR, REQ-PARTICIPANT, OPT-PARTICIPANT, or NON-PARTICIPANT.
+  // Empty means the RFC 5545 default of REQ-PARTICIPANT.
+  string role = 3;
+  // PARTSTAT parameter: NEEDS-ACTION, ACCEPTED, DECLINED, TENTATIVE, DELEGATED,
+  // COMPLETED, or IN-PROCESS. Empty means the RFC 5545 default of NEEDS-ACTION.
+  string participation_status = 4;
+  // RSVP parameter. False (the RFC 5545 default) when absent.
+  bool rsvp = 5;
+}
+
+// A VALARM (RFC 5545 §3.6.6) attached to a VEVENT or VTODO.
+message ICalAlarm {
+  // ACTION: AUDIO, DISPLAY, EMAIL, or PROCEDURE.
+  string action = 1;
+  // TRIGGER value: a signed RFC 5545 DURATION relative to `trigger_related`
+  // (e.g. "-PT15M" = 15 minutes before), or an absolute UTC DATE-TIME when the
+  // trigger is anchored to a fixed instant rather than the event/todo.
+  string trigger = 2;
+  // TRIGGER's RELATED parameter: "START" or "END". Empty means the RFC 5545
+  // default of "START". Meaningless when `trigger` is an absolute date-time.
+  string trigger_related = 3;
+  // DESCRIPTION (required for DISPLAY/EMAIL/PROCEDURE actions).
+  string description = 4;
+  // SUMMARY (EMAIL actions only — the message subject).
+  string summary = 5;
+  // ATTENDEE recipients (EMAIL actions only).
+  repeated ICalAttendee attendees = 6;
+  // REPEAT: how many additional times to repeat the alarm after the first
+  // trigger. 0 means absent/no repeats.
+  int32 repeat = 7;
+  // DURATION between repeats, e.g. "PT5M". Required if `repeat` > 0.
+  string duration = 8;
+}
+
+// A VEVENT (RFC 5545 §3.6.1) — an event/appointment/meeting.
+message ICalEvent {
+  // UID: globally-unique identifier. Required by RFC 5545; ParseICalendar
+  // preserves whatever the source .ics carried, malformed or not.
+  string uid = 1;
+  // SUMMARY (the event title).
+  string summary = 2;
+  // DESCRIPTION.
+  string description = 3;
+  // LOCATION.
+  string location = 4;
+  // DTSTART value, in the form documented at the top of this file.
+  string dtstart = 5;
+  // DTSTART's TZID parameter (an IANA zone id, e.g. "America/New_York").
+  // Empty when `dtstart` is floating or already carries a trailing "Z".
+  string dtstart_tzid = 6;
+  // DTEND value. Empty when the source used DURATION instead, or specified
+  // neither (a zero-duration event) — see `all_day` for the all-day case.
+  string dtend = 7;
+  // DTEND's TZID parameter, mirroring `dtstart_tzid`.
+  string dtend_tzid = 8;
+  // True when DTSTART (and DTEND, if present) use the DATE form rather than
+  // DATE-TIME — an all-day event with no time-of-day component.
+  bool all_day = 9;
+  // STATUS: TENTATIVE, CONFIRMED, or CANCELLED. Empty if absent.
+  string status = 10;
+  // RRULE value with no "RRULE:" prefix, e.g. "FREQ=WEEKLY;COUNT=5". Empty if
+  // the event does not recur. Drops directly into
+  // christiangeorgelucas/recurrence-tools' Recurrence.rrule.
+  string rrule = 11;
+  // RDATE values (extra occurrence dates), each in the form documented above.
+  repeated string rdate = 12;
+  // EXDATE values (excluded occurrence dates).
+  repeated string exdate = 13;
+  // ORGANIZER. Unset (all fields empty/false) if absent.
+  ICalAttendee organizer = 14;
+  // ATTENDEE list.
+  repeated ICalAttendee attendees = 15;
+  // CATEGORIES, flattened from every CATEGORIES property line.
+  repeated string categories = 16;
+  // VALARM children.
+  repeated ICalAlarm alarms = 17;
+  // SEQUENCE. 0 if absent (RFC 5545 default).
+  int32 sequence = 18;
+  // CREATED, in UTC DATE-TIME form. Empty if absent.
+  string created = 19;
+  // LAST-MODIFIED, in UTC DATE-TIME form. Empty if absent.
+  string last_modified = 20;
+  // DTSTAMP, in UTC DATE-TIME form. RFC 5545 requires this on every VEVENT
+  // that appears "in the wild"; ParseICalendar reports it empty rather than
+  // inventing one when the source omits it.
+  string dtstamp = 21;
+  // TRANSP: OPAQUE or TRANSPARENT. Empty means the RFC 5545 default of OPAQUE.
+  string transparency = 22;
+  // CLASS: PUBLIC, PRIVATE, or CONFIDENTIAL. Empty means the RFC 5545 default
+  // of PUBLIC.
+  string classification = 23;
+  // URL.
+  string url = 24;
+}
+
+// A VTODO (RFC 5545 §3.6.2) — an action item / task.
+message ICalTodo {
+  string uid = 1;
+  string summary = 2;
+  string description = 3;
+  string location = 4;
+  // DTSTART, in the form documented at the top of this file.
+  string dtstart = 5;
+  string dtstart_tzid = 6;
+  // DUE value. Mutually exclusive with a DURATION in the source (not modeled
+  // separately here — ParseICalendar always resolves it to an explicit DUE).
+  string due = 7;
+  string due_tzid = 8;
+  // COMPLETED, always UTC DATE-TIME per RFC 5545. Empty if not completed.
+  string completed = 9;
+  // STATUS: NEEDS-ACTION, COMPLETED, IN-PROCESS, or CANCELLED.
+  string status = 10;
+  // PERCENT-COMPLETE, 0-100. 0 if absent.
+  int32 percent_complete = 11;
+  // PRIORITY, 0-9 (0 = undefined, 1 = highest, 9 = lowest, per RFC 5545).
+  int32 priority = 12;
+  string rrule = 13;
+  repeated string rdate = 14;
+  repeated string exdate = 15;
+  ICalAttendee organizer = 16;
+  repeated ICalAttendee attendees = 17;
+  repeated string categories = 18;
+  repeated ICalAlarm alarms = 19;
+  int32 sequence = 20;
+  string created = 21;
+  string last_modified = 22;
+  string dtstamp = 23;
+  string classification = 24;
+  string url = 25;
+}
+
+// A VJOURNAL (RFC 5545 §3.6.3) — a dated journal/note entry.
+message ICalJournal {
+  string uid = 1;
+  // SUMMARY (the journal entry's title).
+  string summary = 2;
+  // DESCRIPTION values, joined with "\n\n" when the source has more than one
+  // (RFC 5545 permits multiple DESCRIPTION lines on a VJOURNAL, uniquely
+  // among the three component types in this package).
+  string description = 3;
+  string dtstart = 4;
+  string dtstart_tzid = 5;
+  // STATUS: DRAFT, FINAL, or CANCELLED.
+  string status = 6;
+  ICalAttendee organizer = 7;
+  repeated ICalAttendee attendees = 8;
+  repeated string categories = 9;
+  int32 sequence = 10;
+  string created = 11;
+  string last_modified = 12;
+  string dtstamp = 13;
+  string classification = 14;
+  string url = 15;
+}
+
+// The canonical calendar-file envelope: the whole content of a .ics VCALENDAR,
+// structured. ParseICalendar produces this; BuildICalendar consumes it — the
+// two are meant to round-trip.
+message ICalCalendar {
+  // PRODID, e.g. "-//christiangeorgelucas//icalendar-tools//EN". Required by
+  // RFC 5545; BuildICalendar fills the package's own default when empty.
+  string prodid = 1;
+  // VERSION. Required; BuildICalendar fills "2.0" when empty.
+  string version = 2;
+  // CALSCALE. Empty means the RFC 5545 default of GREGORIAN.
+  string calscale = 3;
+  // METHOD (iTIP), e.g. "REQUEST", "PUBLISH", "CANCEL". Empty if absent.
+  string method = 4;
+  // Every VEVENT in the calendar, source order.
+  repeated ICalEvent events = 5;
+  // Every VTODO in the calendar, source order.
+  repeated ICalTodo todos = 6;
+  // Every VJOURNAL in the calendar, source order.
+  repeated ICalJournal journals = 7;
+  // An error carried in from an upstream node. When set, every node consuming
+  // this envelope propagates it verbatim and does no work. A flow author wires
+  // an upstream `error` here; a direct caller leaves it unset.
+  Error error = 8;
+}
+
+// Raw .ics text, the input to ParseICalendar and ValidateICalendar.
+message ICalTextInput {
+  // The full .ics document text (one VCALENDAR). Capped at 2 MiB; larger
+  // input is rejected with LIMIT_EXCEEDED before any parsing is attempted.
+  string ics_text = 1;
+  Error error = 2;
+}
+
+// Generated .ics text, the output of BuildICalendar.
+message ICalTextOutput {
+  // The rendered .ics document, CRLF line endings and folded per RFC 5545,
+  // ready to write to a .ics file as-is. Empty on error.
+  string ics_text = 1;
+  Error error = 2;
+}
+
+// The result of validating a .ics document against RFC 5545.
+message ICalValidationResult {
+  // True when the document both parses and passes RFC 5545 validation.
+  bool valid = 1;
+  // Every validation problem found: a parse failure (at most one entry, when
+  // the text is not iCalendar at all) or one entry per RFC 5545 rule violated
+  // (e.g. a VEVENT missing UID/DTSTAMP). Empty when `valid` is true.
+  repeated string errors = 2;
+  Error error = 3;
+}
+
+// ListEvents input: a calendar plus optional filters. Both filters are
+// optional and combine with AND; leave both empty to list every VEVENT.
+message ICalListEventsInput {
+  string ics_text = 1;
+  // Case-insensitive exact match against any one of an event's CATEGORIES.
+  // Empty means no category filter.
+  string category_filter = 2;
+  // Half-open window [window_start, window_end) an event's own [dtstart,
+  // dtend) must overlap. Both RFC 5545 form strings; both must be set
+  // together, or both left empty for no window filter.
+  string window_start = 3;
+  string window_end = 4;
+  Error error = 5;
+}
+
+// A filtered list of VEVENTs.
+message ICalEventList {
+  repeated ICalEvent events = 1;
+  Error error = 2;
+}
+
+// ExpandOccurrences input: a calendar plus the concrete window to expand
+// recurring VEVENTs into. Complementary to, and distinct from,
+// christiangeorgelucas/recurrence-tools' bare-RRULE expansion nodes: this
+// operates over every VEVENT in a whole calendar FILE at once (RRULE, RDATE,
+// and EXDATE together, per RFC 5545 §3.8.5), not a single caller-supplied
+// RRULE string.
+message ICalExpandInput {
+  string ics_text = 1;
+  // Window start, INCLUSIVE. RFC 5545 form string.
+  string window_start = 2;
+  // Window end, EXCLUSIVE. RFC 5545 form string. Must be strictly after
+  // `window_start`.
+  string window_end = 3;
+  // Cap on returned occurrences, across all events combined. 0 means the
+  // default of 500; maximum accepted is 5000. A ceiling, not a promise: a
+  // dense window can hit it first and return fewer, flagged `truncated`.
+  int32 limit = 4;
+  Error error = 5;
+}
+
+// One concrete occurrence of a VEVENT, materialized within the requested window.
+message ICalEventOccurrence {
+  // The UID of the VEVENT this occurrence belongs to.
+  string uid = 1;
+  string summary = 2;
+  string location = 3;
+  // This occurrence's own start, in the same form as the source VEVENT's DTSTART.
+  string occurrence_start = 4;
+  // This occurrence's own end. Empty under the same conditions ICalEvent.dtend is.
+  string occurrence_end = 5;
+  // True when this occurrence came from expanding an RRULE/RDATE, false when
+  // the VEVENT has no recurrence and this is simply its own DTSTART/DTEND.
+  bool is_recurring = 6;
+}
+
+message ICalOccurrenceList {
+  // Every occurrence in the window, ordered by occurrence_start, earliest first.
+  repeated ICalEventOccurrence occurrences = 1;
+  // True when `limit` was hit before the window was fully scanned.
+  bool truncated = 2;
+  Error error = 3;
+}

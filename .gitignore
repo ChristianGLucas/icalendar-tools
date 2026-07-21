@@ -1,0 +1,10 @@
+# Axiom build artifacts
+.axiom/
+
+# Generated proto bindings
+gen/
+
+# Java
+target/
+*.class
+*.jar
