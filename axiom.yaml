@@ -1,5 +1,5 @@
 name: christiangeorgelucas/icalendar-tools
-version: 0.1.0
+version: 0.1.1
 language: java
 description: >-
   Composable Axiom iCalendar (RFC 5545) CALENDAR-FILE nodes — parse a whole

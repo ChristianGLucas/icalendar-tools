@@ -68,7 +68,6 @@ import net.fortuna.ical4j.model.Dur;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -95,12 +94,6 @@ final class ICal4jHelper {
 
     private ICal4jHelper() {}
 
-    /** Raw .ics input larger than this is rejected before any parsing is attempted. */
-    static final int MAX_ICS_BYTES = 2 * 1024 * 1024;
-
-    /** Defensive ceiling on total top-level components in a single calendar. */
-    static final int MAX_COMPONENTS = 10_000;
-
     private static final TimeZoneRegistry TZ_REGISTRY =
             TimeZoneRegistryFactory.getInstance().createRegistry();
 
@@ -125,16 +118,11 @@ final class ICal4jHelper {
         return Error.newBuilder().setCode("INTERNAL").setMessage(String.valueOf(t.getMessage())).build();
     }
 
-    // ---- size-bounded parse / render -------------------------------------------------
+    // ---- parse / render -------------------------------------------------
 
     static void checkSize(String icsText) throws IcalException {
         if (icsText == null) {
             throw new IcalException("INVALID_ARGUMENT", "ics_text is required");
-        }
-        int bytes = icsText.getBytes(StandardCharsets.UTF_8).length;
-        if (bytes > MAX_ICS_BYTES) {
-            throw new IcalException("LIMIT_EXCEEDED",
-                    "ics_text is " + bytes + " bytes, exceeding the " + MAX_ICS_BYTES + " byte cap");
         }
     }
 
@@ -142,13 +130,7 @@ final class ICal4jHelper {
         checkSize(icsText);
         try {
             CalendarBuilder builder = new CalendarBuilder();
-            Calendar calendar = builder.build(new StringReader(icsText));
-            int total = calendar.getComponents().size();
-            if (total > MAX_COMPONENTS) {
-                throw new IcalException("LIMIT_EXCEEDED",
-                        "calendar has " + total + " components, exceeding the " + MAX_COMPONENTS + " cap");
-            }
-            return calendar;
+            return builder.build(new StringReader(icsText));
         } catch (IcalException e) {
             throw e;
         } catch (Exception e) {

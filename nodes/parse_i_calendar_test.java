@@ -148,15 +148,15 @@ public class ParseICalendarTest {
     }
 
     @Test
-    public void testParseICalendar_oversizedInputReturnsLimitExceeded() {
+    public void testParseICalendar_largeMalformedInputReturnsStructuredErrorNotCrash() {
         AxiomContext ax = new TestContext();
         StringBuilder huge = new StringBuilder();
-        // One byte over the 2 MiB cap.
         for (int i = 0; i < (2 * 1024 * 1024) + 1; i++) huge.append('x');
         ICalTextInput input = ICalTextInput.newBuilder().setIcsText(huge.toString()).build();
         ICalCalendar result = ParseICalendar.parseICalendar(ax, input);
+        assertNotNull(result);
         assertTrue(result.hasError());
-        assertEquals("LIMIT_EXCEEDED", result.getError().getCode());
+        assertEquals("INVALID_ICS", result.getError().getCode());
     }
 
     @Test

@@ -86,13 +86,15 @@ public class ValidateICalendarTest {
     }
 
     @Test
-    public void testValidateICalendar_oversizedInputReturnsLimitExceededError() {
+    public void testValidateICalendar_largeGarbageInputIsInvalidNotCrash() {
         AxiomContext ax = new TestContext();
         StringBuilder huge = new StringBuilder();
         for (int i = 0; i < (2 * 1024 * 1024) + 1; i++) huge.append('x');
         ICalValidationResult result = ValidateICalendar.validateICalendar(ax,
                 ICalTextInput.newBuilder().setIcsText(huge.toString()).build());
-        assertTrue(result.hasError());
-        assertEquals("LIMIT_EXCEEDED", result.getError().getCode());
+        assertNotNull(result);
+        assertFalse(result.hasError());
+        assertFalse(result.getValid());
+        assertTrue(result.getErrorsCount() >= 1);
     }
 }
