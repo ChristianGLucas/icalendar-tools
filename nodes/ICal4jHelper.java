@@ -131,8 +131,6 @@ final class ICal4jHelper {
         try {
             CalendarBuilder builder = new CalendarBuilder();
             return builder.build(new StringReader(icsText));
-        } catch (IcalException e) {
-            throw e;
         } catch (Exception e) {
             throw new IcalException("INVALID_ICS", "could not parse .ics text: " + e.getMessage(), e);
         }
