@@ -13,6 +13,8 @@ import net.fortuna.ical4j.model.Period;
 import net.fortuna.ical4j.model.PeriodList;
 import net.fortuna.ical4j.model.Property;
 import net.fortuna.ical4j.model.component.VEvent;
+import net.fortuna.ical4j.model.property.DtEnd;
+import net.fortuna.ical4j.model.property.DtStart;
 import net.fortuna.ical4j.model.property.RecurrenceId;
 
 import java.util.ArrayList;
@@ -489,9 +491,14 @@ public class ExpandOccurrences {
      * that is what the source used), or 0 when it has neither.
      */
     private static long masterDurationOf(VEvent v) {
-        if (v.getStartDate() == null || v.getStartDate().getDate() == null) return 0;
-        if (v.getEndDate(true) == null || v.getEndDate(true).getDate() == null) return 0;
-        long d = v.getEndDate(true).getDate().getTime() - v.getStartDate().getDate().getTime();
+        // getEndDate(true) constructs a fresh DtEnd when deriving from DURATION, so it
+        // is read once rather than three times.
+        DtStart start = v.getStartDate();
+        DtEnd end = v.getEndDate(true);
+        if (start == null || start.getDate() == null || end == null || end.getDate() == null) {
+            return 0;
+        }
+        long d = end.getDate().getTime() - start.getDate().getTime();
         return d > 0 ? d : 0;
     }
 
