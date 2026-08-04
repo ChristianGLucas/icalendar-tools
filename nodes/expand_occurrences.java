@@ -191,10 +191,31 @@ public class ExpandOccurrences {
                     if (ov.thisAndFuture) intervalOwners.add(ov);
                 }
 
+                // The plain interval is widened BACKWARD by the master's own duration
+                // when the series is recurring. ical4j filters RDATE-scheduled
+                // occurrences on their START falling inside the requested period, with
+                // no duration allowance — unlike RRULE-scheduled ones, which it filters
+                // on overlap — so an RDATE occurrence STRADDLING window_start would
+                // otherwise vanish and a real two-hour meeting would be reported as free
+                // time. (Wrong since 0.1.0; the same query answers correctly when the
+                // identical occurrence is scheduled by RRULE or by a plain VEVENT.)
+                //
+                // Only when recurring: a NON-recurring VEVENT already goes through
+                // ical4j's overlap filter correctly, and widening its interval would
+                // silently flip its half-open boundary rule to a closed one underneath
+                // consumers that depend on "an event ending at 10:00 does not conflict
+                // with a proposal starting at 10:00".
+                //
+                // The unconditional overlapsWindow below trims whatever the widening
+                // over-collects, and ownership is untouched, so no duplicates arise.
+                long masterDuration = recurring ? masterDurationOf(v) : 0;
+
                 for (Override owner : intervalOwners) {
                     Period period;
                     if (owner == null) {
-                        period = new Period(ws, we);
+                        period = masterDuration == 0
+                                ? new Period(ws, we)
+                                : new Period(new DateTime(ws.getTime() - masterDuration), we);
                     } else {
                         long d = owner.hasDuration ? owner.durationMillis : 0;
                         period = new Period(
@@ -202,82 +223,82 @@ public class ExpandOccurrences {
                                 new DateTime(we.getTime() - owner.shiftMillis));
                     }
 
-                PeriodList periods = v.calculateRecurrenceSet(period);
-                for (Object po : periods) {
-                    Period p = (Period) po;
-                    long startMillis = p.getStart().getTime();
-                    String startValue = String.valueOf(p.getStart());
+                    PeriodList periods = v.calculateRecurrenceSet(period);
+                    for (Object po : periods) {
+                        Period p = (Period) po;
+                        long startMillis = p.getStart().getTime();
+                        String startValue = String.valueOf(p.getStart());
 
-                    Override exact = exactOverride(overrides, startMillis);
-                    if (exact != null) {
-                        // RFC 5545 §3.8.4.4: the override REPLACES this instance. Emitted
-                        // in pass 2a (or deliberately dropped when cancelled) — never here.
-                        continue;
-                    }
-
-                    Override future = governingThisAndFuture(overrides, startMillis);
-                    // Emit an instance only from the interval that owns it, so widening
-                    // one interval can never duplicate what another already produced.
-                    if (future != owner) {
-                        continue;
-                    }
-                    if (future == null) {
-                        if (!overlapsWindow(startMillis, endMillis(p, startMillis), ws, we)) {
+                        Override exact = exactOverride(overrides, startMillis);
+                        if (exact != null) {
+                            // RFC 5545 §3.8.4.4: the override REPLACES this instance. Emitted
+                            // in pass 2a (or deliberately dropped when cancelled) — never here.
                             continue;
                         }
-                        candidates.add(new Candidate(startMillis, ICalEventOccurrence.newBuilder()
-                                .setUid(conv.getUid())
-                                .setSummary(conv.getSummary())
-                                .setLocation(conv.getLocation())
-                                .setOccurrenceStart(startValue)
-                                .setOccurrenceEnd(p.getEnd() == null ? "" : String.valueOf(p.getEnd()))
-                                .setIsRecurring(recurring)
-                                .setStatus(conv.getStatus())
-                                .build()));
-                        continue;
-                    }
 
-                    // Governed by a RANGE=THISANDFUTURE override: shift by its delta and
-                    // adopt its summary/location/status — AND its duration.
-                    //
-                    // RFC 5545 §3.8.4.4: "When the given recurrence instance is
-                    // rescheduled, all subsequent instances are also rescheduled by the
-                    // same time difference. […] Similarly, if the duration of the given
-                    // recurrence instance is modified, then all subsequen[t] instances are
-                    // also modified to have this same duration."
-                    //
-                    // Carrying the MASTER's duration forward instead would misreport in
-                    // both directions: a shortened series would keep reporting the minutes
-                    // the owner gave back as busy (the same phantom class this release
-                    // removes), and a lengthened one would report free time over a real
-                    // meeting — the more dangerous error, since a booking agent acts on it.
-                    if (!includeCancelled && CANCELLED.equalsIgnoreCase(future.status)) {
-                        continue;
+                        Override future = governingThisAndFuture(overrides, startMillis);
+                        // Emit an instance only from the interval that owns it, so widening
+                        // one interval can never duplicate what another already produced.
+                        if (future != owner) {
+                            continue;
+                        }
+                        if (future == null) {
+                            if (!overlapsWindow(startMillis, endMillis(p, startMillis), ws, we)) {
+                                continue;
+                            }
+                            candidates.add(new Candidate(startMillis, ICalEventOccurrence.newBuilder()
+                                    .setUid(conv.getUid())
+                                    .setSummary(conv.getSummary())
+                                    .setLocation(conv.getLocation())
+                                    .setOccurrenceStart(startValue)
+                                    .setOccurrenceEnd(p.getEnd() == null ? "" : String.valueOf(p.getEnd()))
+                                    .setIsRecurring(recurring)
+                                    .setStatus(conv.getStatus())
+                                    .build()));
+                            continue;
+                        }
+
+                        // Governed by a RANGE=THISANDFUTURE override: shift by its delta and
+                        // adopt its summary/location/status — AND its duration.
+                        //
+                        // RFC 5545 §3.8.4.4: "When the given recurrence instance is
+                        // rescheduled, all subsequent instances are also rescheduled by the
+                        // same time difference. […] Similarly, if the duration of the given
+                        // recurrence instance is modified, then all subsequen[t] instances are
+                        // also modified to have this same duration."
+                        //
+                        // Carrying the MASTER's duration forward instead would misreport in
+                        // both directions: a shortened series would keep reporting the minutes
+                        // the owner gave back as busy (the same phantom class this release
+                        // removes), and a lengthened one would report free time over a real
+                        // meeting — the more dangerous error, since a booking agent acts on it.
+                        if (!includeCancelled && CANCELLED.equalsIgnoreCase(future.status)) {
+                            continue;
+                        }
+                        long shiftedStart = startMillis + future.shiftMillis;
+                        boolean hasEnd = future.hasDuration || p.getEnd() != null;
+                        long shiftedEnd = future.hasDuration
+                                ? shiftedStart + future.durationMillis
+                                : endMillis(p, startMillis) + future.shiftMillis;
+                        if (!overlapsWindow(shiftedStart, hasEnd ? shiftedEnd : shiftedStart, ws, we)) {
+                            continue;
+                        }
+                        // Rendered in the SAME form as the master occurrence it displaces, not
+                        // forced to UTC: mixing forms inside one series hands the consumer two
+                        // rows for the same meeting in incompatible notations, with no field to
+                        // tell them apart.
+                        candidates.add(new Candidate(shiftedStart, ICalEventOccurrence.newBuilder()
+                                .setUid(conv.getUid())
+                                .setSummary(future.summary)
+                                .setLocation(future.location)
+                                .setOccurrenceStart(renderAs(p.getStart(), shiftedStart))
+                                .setOccurrenceEnd(hasEnd ? renderAs(p.getStart(), shiftedEnd) : "")
+                                .setIsRecurring(recurring)
+                                .setRecurrenceId(startValue)
+                                .setIsOverride(true)
+                                .setStatus(future.status)
+                                .build()));
                     }
-                    long shiftedStart = startMillis + future.shiftMillis;
-                    boolean hasEnd = future.hasDuration || p.getEnd() != null;
-                    long shiftedEnd = future.hasDuration
-                            ? shiftedStart + future.durationMillis
-                            : endMillis(p, startMillis) + future.shiftMillis;
-                    if (!overlapsWindow(shiftedStart, hasEnd ? shiftedEnd : shiftedStart, ws, we)) {
-                        continue;
-                    }
-                    // Rendered in the SAME form as the master occurrence it displaces, not
-                    // forced to UTC: mixing forms inside one series hands the consumer two
-                    // rows for the same meeting in incompatible notations, with no field to
-                    // tell them apart.
-                    candidates.add(new Candidate(shiftedStart, ICalEventOccurrence.newBuilder()
-                            .setUid(conv.getUid())
-                            .setSummary(future.summary)
-                            .setLocation(future.location)
-                            .setOccurrenceStart(renderAs(p.getStart(), shiftedStart))
-                            .setOccurrenceEnd(hasEnd ? renderAs(p.getStart(), shiftedEnd) : "")
-                            .setIsRecurring(recurring)
-                            .setRecurrenceId(startValue)
-                            .setIsOverride(true)
-                            .setStatus(future.status)
-                            .build()));
-                }
                 }
             }
 
@@ -461,6 +482,17 @@ public class ExpandOccurrences {
             out.setUtc(true);
         }
         return String.valueOf(out);
+    }
+
+    /**
+     * The master VEVENT's own DTSTART→DTEND span (deriving the end from DURATION when
+     * that is what the source used), or 0 when it has neither.
+     */
+    private static long masterDurationOf(VEvent v) {
+        if (v.getStartDate() == null || v.getStartDate().getDate() == null) return 0;
+        if (v.getEndDate(true) == null || v.getEndDate(true).getDate() == null) return 0;
+        long d = v.getEndDate(true).getDate().getTime() - v.getStartDate().getDate().getTime();
+        return d > 0 ? d : 0;
     }
 
     private static long endMillis(Period p, long startMillis) {

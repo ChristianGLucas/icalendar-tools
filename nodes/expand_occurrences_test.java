@@ -737,6 +737,52 @@ public class ExpandOccurrencesTest {
     }
 
     @Test
+    public void testRdateOccurrenceStraddlingTheWindowIsFoundLikeAnyOther() {
+        // ical4j filters RDATE-scheduled occurrences on their START landing inside the
+        // requested period, with no duration allowance — unlike RRULE-scheduled ones,
+        // which it filters on OVERLAP. So a two-hour RDATE occurrence queried from
+        // inside its own middle used to come back EMPTY: free time reported over a real
+        // meeting, the most dangerous direction. Wrong since 0.1.0.
+        //
+        // The three calendars below schedule the SAME 09:00-11:00 occurrence on 22 Aug
+        // three different ways. A caller cannot be expected to know that the scheduling
+        // mechanism changes the answer, so all three must agree.
+        String window0 = "20260822T100000Z", window1 = "20260822T103000Z";
+
+        String viaRdate = ics(
+                "BEGIN:VEVENT", "UID:r1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260812T090000Z", "DTEND:20260812T110000Z",
+                "RDATE:20260822T090000Z", "SUMMARY:Via RDATE", "END:VEVENT");
+        String viaRrule = ics(
+                "BEGIN:VEVENT", "UID:r2", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260822T090000Z", "DTEND:20260822T110000Z",
+                "RRULE:FREQ=DAILY;COUNT=1", "SUMMARY:Via RRULE", "END:VEVENT");
+        String viaPlain = ics(
+                "BEGIN:VEVENT", "UID:r3", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260822T090000Z", "DTEND:20260822T110000Z",
+                "SUMMARY:Plain", "END:VEVENT");
+
+        assertEquals(List.of("20260822T090000Z"), startsOf(expand(viaRrule, window0, window1)),
+                "control: an RRULE occurrence straddling the window is found");
+        assertEquals(List.of("20260822T090000Z"), startsOf(expand(viaPlain, window0, window1)),
+                "control: a plain VEVENT straddling the window is found");
+        assertEquals(List.of("20260822T090000Z"), startsOf(expand(viaRdate, window0, window1)),
+                "an RDATE occurrence straddling the window must be found too — reporting it "
+                        + "as free time is a real meeting invisible to a booking agent");
+
+        // The widening must not over-collect: the OTHER occurrence of the same RDATE
+        // series (12 Aug) is nowhere near this window and must not appear.
+        assertEquals(1, expand(viaRdate, window0, window1).getOccurrencesCount());
+
+        // ...and it must not silently flip the boundary rule for NON-recurring events,
+        // which stays half-open: an event ending exactly at window_start does not
+        // overlap. Consumers depend on "an event ending at 10:00 does not conflict with
+        // a proposal starting at 10:00".
+        assertEquals(List.of(), startsOf(expand(viaPlain, "20260822T110000Z", "20260822T120000Z")),
+                "a non-recurring event ending exactly at window_start must stay excluded");
+    }
+
+    @Test
     public void testMultipleOverridesOnOneSeries() {
         // Two separate instances edited; both must be subtracted, and each override
         // must attach to its OWN recurrence_id rather than the first one found.
