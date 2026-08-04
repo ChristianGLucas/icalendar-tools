@@ -364,16 +364,23 @@ public class ExpandOccurrences {
     }
 
     /**
-     * Half-open overlap against [ws, we) — the same test ical4j's own window filter
-     * applies, re-implemented here only for occurrences whose instants this node
-     * shifted (RANGE=THISANDFUTURE) and which therefore cannot be filtered by
-     * calculateRecurrenceSet. A zero-length occurrence counts as overlapping when its
-     * instant lies inside the window, matching this node's pre-existing behaviour.
+     * Window overlap for occurrences this node had to filter itself — the ones it
+     * expanded over a PADDED window and then shifted for RANGE=THISANDFUTURE, which
+     * ical4j's own filter therefore never saw.
+     *
+     * <p>This deliberately reproduces ical4j's semantics for a RECURRING VEVENT,
+     * which is what the padded path always expands: {@code calculateRecurrenceSet}
+     * is CLOSED at both ends for a recurring event — an occurrence ending exactly at
+     * {@code window_start}, or starting exactly at {@code window_end}, IS returned.
+     * (Verified against the deployed 0.1.2; note it is half-OPEN at both ends for a
+     * NON-recurring VEVENT, an ical4j inconsistency that predates this node and is
+     * left untouched here rather than silently changed underneath published
+     * consumers.) Matching it exactly is the point: the same calendar must not answer
+     * differently depending on whether an unrelated later instance happened to be
+     * edited, which is the only thing that turns the padding on.
      */
     private static boolean overlapsWindow(long start, long end, DateTime ws, DateTime we) {
-        if (start >= we.getTime()) return false;
-        if (end == start) return start >= ws.getTime();
-        return end > ws.getTime();
+        return start <= we.getTime() && end >= ws.getTime();
     }
 
     private static final class Candidate {

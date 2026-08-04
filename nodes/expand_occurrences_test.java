@@ -473,6 +473,51 @@ public class ExpandOccurrencesTest {
     }
 
     @Test
+    public void testPaddedExpansionUsesTheSameWindowBoundarySemanticsAsTheNormalPath() {
+        // When a RANGE=THISANDFUTURE override exists, the master is expanded over a
+        // PADDED window and re-filtered by this node's own overlap predicate instead
+        // of ical4j's. Those two filters must agree, or the same calendar answers
+        // differently depending on whether an unrelated later instance was edited.
+        //
+        // The window filter is half-open at BOTH ends: an occurrence ending exactly
+        // at window_start does NOT overlap, and one starting exactly at window_end
+        // does NOT either. Pinned here on the PADDED path.
+        String withTaf = ics(
+                "BEGIN:VEVENT", "UID:b1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:Boundary", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:b1", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260812T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260812T190000Z", "DTEND:20260812T200000Z",
+                "SUMMARY:Boundary (moved)", "END:VEVENT");
+        String withoutTaf = ics(
+                "BEGIN:VEVENT", "UID:b1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:Boundary", "END:VEVENT");
+
+        // Window starts exactly when the 10 Aug instance ENDS. ical4j's filter is
+        // CLOSED at both ends for a RECURRING event, so that instance IS returned.
+        // (It is half-OPEN for a non-recurring VEVENT — an ical4j inconsistency that
+        // predates this node. What is pinned here is that the padded path does not
+        // introduce a THIRD behaviour.)
+        List<String> padded = startsOf(expand(withTaf, "20260810T100000Z", "20260812T000000Z"));
+        List<String> unpadded = startsOf(expand(withoutTaf, "20260810T100000Z", "20260812T000000Z"));
+        assertEquals(List.of("20260810T090000Z", "20260811T090000Z"), unpadded,
+                "recurring occurrences touching window_start are included (ical4j path)");
+        assertEquals(unpadded, padded,
+                "the padded path must apply the SAME boundary rule as the normal path — the "
+                        + "answer must not change just because an unrelated later instance was edited");
+
+        // ...and the mirror case: window ends exactly when the 11 Aug instance STARTS.
+        List<String> padded2 = startsOf(expand(withTaf, "20260810T120000Z", "20260811T090000Z"));
+        List<String> unpadded2 = startsOf(expand(withoutTaf, "20260810T120000Z", "20260811T090000Z"));
+        assertEquals(List.of("20260811T090000Z"), unpadded2,
+                "recurring occurrences touching window_end are included (ical4j path)");
+        assertEquals(unpadded2, padded2,
+                "the padded path must agree at the closing edge too");
+    }
+
+    @Test
     public void testMultipleOverridesOnOneSeries() {
         // Two separate instances edited; both must be subtracted, and each override
         // must attach to its OWN recurrence_id rather than the first one found.
