@@ -54,10 +54,12 @@ nodes:
         expands to the same occurrences and an edited instance does not
         silently become a second, duplicate meeting. Properties the
         ICalCalendar envelope does not model (DURATION, EXRULE, ATTACH, GEO,
-        RELATED-TO, X- extensions) are not preserved. Rejects a component that
-        is both a recurring master and a RECURRENCE-ID override, and refuses to
-        emit the deprecated RANGE=THISANDPRIOR, rather than producing
-        non-conformant iCalendar. Fills a
+        RELATED-TO, X- extensions) are not preserved. The deprecated
+        RANGE=THISANDPRIOR, which RFC 5545 §3.2.13 says MUST NOT be generated,
+        is DROPPED rather than emitted — and rather than failing the whole
+        calendar, so a legacy RFC 2445 document still round-trips. An absent
+        RANGE means the same thing ExpandOccurrences already reads
+        THISANDPRIOR as: this single instance only. Fills a
         default PRODID/VERSION when the caller leaves them empty. Rejects a
         calendar with zero components, or a component missing its required
         UID, with a structured error rather than emitting invalid iCalendar.
@@ -111,7 +113,10 @@ nodes:
         an occurrence of a RECURRING VEVENT that merely touches a bound is
         returned (a non-recurring one in the same position is not) — if you
         are computing free/busy, treat a touching occurrence as
-        non-conflicting yourself.
+        non-conflicting yourself. Not implemented: an override VEVENT that
+        carries its OWN RRULE (the RFC 5546 way to express a recurrence-RULE
+        change rather than a reschedule) is treated as a plain single-instance
+        override; its rule is not applied to the series.
         Complementary to christiangeorgelucas/recurrence-tools (which expands
         one bare RRULE string you supply yourself): this operates on every
         recurring VEVENT already inside a whole calendar file at once. Capped

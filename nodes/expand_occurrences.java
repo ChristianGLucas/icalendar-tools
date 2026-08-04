@@ -28,13 +28,6 @@ public class ExpandOccurrences {
     // A sane ceiling on window span: bounds calculateRecurrenceSet's work per event
     // without having to reimplement RRULE/RDATE/EXDATE merging ourselves.
     private static final long MAX_WINDOW_MILLIS = 50L * 365 * 24 * 3600 * 1000;
-    // A RANGE=THISANDFUTURE override shifts every later instance by (its DTSTART -
-    // its RECURRENCE-ID). To catch instances that shift ACROSS a window edge, the
-    // master is expanded over a window padded by that delta — so the PADDING has to
-    // be bounded, or a hostile or broken calendar could widen the expansion without
-    // limit. The bound applies to the padding ONLY, never to the shift itself: this
-    // is a cost ceiling, not a correctness one.
-    private static final long MAX_PAD_MILLIS = 366L * 24 * 3600 * 1000;
 
     private static final String CANCELLED = "CANCELLED";
 
@@ -143,12 +136,17 @@ public class ExpandOccurrences {
                     if (!overlapsWindow(start, end, ws, we)) {
                         continue;
                     }
+                    // Rendered through renderAs, NOT from the raw source value: an
+                    // all-day override's DTSTART is a bare DATE ("20260812") while every
+                    // other row of the same series is a DATE-TIME ("20260812T000000Z"),
+                    // and mixing the two inside one response breaks both parsing and the
+                    // lexicographic ordering downstream flows depend on.
                     candidates.add(new Candidate(start, ICalEventOccurrence.newBuilder()
                             .setUid(ov.uid)
                             .setSummary(ov.summary)
                             .setLocation(ov.location)
-                            .setOccurrenceStart(ov.startValue)
-                            .setOccurrenceEnd(ov.endValue)
+                            .setOccurrenceStart(renderAs(ov.startDate, start))
+                            .setOccurrenceEnd(ov.hasDuration ? renderAs(ov.startDate, end) : "")
                             .setIsRecurring(true)
                             .setRecurrenceId(ov.recurrenceIdValue)
                             .setIsOverride(true)
@@ -166,33 +164,43 @@ public class ExpandOccurrences {
                 boolean recurring = !conv.getRrule().isEmpty() || conv.getRdateCount() > 0;
                 List<Override> overrides = overridesByUid.getOrDefault(conv.getUid(), List.of());
 
-                // A THISANDFUTURE override shifts later instances, possibly across a
-                // window edge in either direction — so expand over a padded window and
-                // re-filter after shifting. Zero padding when no such override exists,
-                // which is the overwhelmingly common case.
+                // Which master instants can possibly land in the window?
                 //
-                // The pad is a COST bound and is capped; the shift itself is a
-                // CORRECTNESS value and never is. Clamping the shift instead would
-                // silently report the vacated slots as busy — reintroducing the exact
-                // phantom this node exists to remove — so an implausibly distant
-                // reschedule may under-report at the window edges, but it will never
-                // claim the owner is busy at a time they demonstrably freed.
-                // The pad must cover the SHIFT plus the override's DURATION, not the
-                // shift alone. A master occurrence can end up overlapping the window
-                // purely because the override lengthened it: shift a 09:00–10:00
-                // instance by +2h and stretch it to 90 minutes and it runs 11:00–12:30,
-                // which overlaps a 12:05–12:25 query even though its shifted START is
-                // before the window and its unshifted start is 3h before that.
-                long pad = 0;
+                // An UNGOVERNED instance is emitted as-is, so it must overlap [ws, we].
+                // An instance governed by a THISANDFUTURE override with shift Δ and
+                // duration D is emitted at [S+Δ, S+Δ+D], so it lands in the window iff
+                //
+                //     S ∈ [ws − Δ − D,  we − Δ]
+                //
+                // — the window TRANSLATED by −Δ and widened by D, NOT widened by |Δ|.
+                // That distinction is the whole point: each search interval stays
+                // (we − ws) + D wide however distant the reschedule, so a series
+                // postponed by two years costs no more to resolve than one moved by two
+                // hours and needs no cost ceiling. Padding symmetrically instead forces
+                // a clamp, and a clamp silently DROPS the propagated instances — telling
+                // a booking agent "no conflict" over real meetings, the same
+                // under-reporting this node rejects everywhere else.
+                //
+                // Each interval is searched separately and each instance is emitted by
+                // exactly one of them, because which interval owns an instance is
+                // decided by governingThisAndFuture(S) — a function of the instance, not
+                // of the interval. So there are no duplicates to reconcile.
+                List<Override> intervalOwners = new ArrayList<>();
+                intervalOwners.add(null); // the plain window, for ungoverned instances
                 for (Override ov : overrides) {
-                    if (ov.thisAndFuture) {
-                        long reach = Math.abs(ov.shiftMillis) + (ov.hasDuration ? ov.durationMillis : 0);
-                        pad = Math.max(pad, Math.min(reach, MAX_PAD_MILLIS));
-                    }
+                    if (ov.thisAndFuture) intervalOwners.add(ov);
                 }
-                Period period = pad == 0
-                        ? new Period(ws, we)
-                        : new Period(new DateTime(ws.getTime() - pad), new DateTime(we.getTime() + pad));
+
+                for (Override owner : intervalOwners) {
+                    Period period;
+                    if (owner == null) {
+                        period = new Period(ws, we);
+                    } else {
+                        long d = owner.hasDuration ? owner.durationMillis : 0;
+                        period = new Period(
+                                new DateTime(ws.getTime() - owner.shiftMillis - d),
+                                new DateTime(we.getTime() - owner.shiftMillis));
+                    }
 
                 PeriodList periods = v.calculateRecurrenceSet(period);
                 for (Object po : periods) {
@@ -208,9 +216,14 @@ public class ExpandOccurrences {
                     }
 
                     Override future = governingThisAndFuture(overrides, startMillis);
+                    // Emit an instance only from the interval that owns it, so widening
+                    // one interval can never duplicate what another already produced.
+                    if (future != owner) {
+                        continue;
+                    }
                     if (future == null) {
-                        if (pad != 0 && !overlapsWindow(startMillis, endMillis(p, startMillis), ws, we)) {
-                            continue; // only reachable via the padded expansion above
+                        if (!overlapsWindow(startMillis, endMillis(p, startMillis), ws, we)) {
+                            continue;
                         }
                         candidates.add(new Candidate(startMillis, ICalEventOccurrence.newBuilder()
                                 .setUid(conv.getUid())
@@ -257,13 +270,14 @@ public class ExpandOccurrences {
                             .setUid(conv.getUid())
                             .setSummary(future.summary)
                             .setLocation(future.location)
-                            .setOccurrenceStart(renderLike(p.getStart(), shiftedStart))
-                            .setOccurrenceEnd(hasEnd ? renderLike(p.getStart(), shiftedEnd) : "")
+                            .setOccurrenceStart(renderAs(p.getStart(), shiftedStart))
+                            .setOccurrenceEnd(hasEnd ? renderAs(p.getStart(), shiftedEnd) : "")
                             .setIsRecurring(recurring)
                             .setRecurrenceId(startValue)
                             .setIsOverride(true)
                             .setStatus(future.status)
                             .build()));
+                }
                 }
             }
 
@@ -302,19 +316,18 @@ public class ExpandOccurrences {
         final boolean thisAndFuture;
         /** DTSTART − RECURRENCE-ID: how far THISANDFUTURE moves each later instance. */
         final long shiftMillis;
-        /** This override's own DTSTART, as epoch millis and as its literal value. */
+        /** This override's own DTSTART: the parsed value (for rendering) and its instant. */
+        final net.fortuna.ical4j.model.Date startDate;
         final long startMillis;
-        final String startValue;
         /** This override's own end. {@code hasDuration} is false when it has neither
          *  a DTEND nor a DURATION to derive one from. */
         final boolean hasDuration;
         final long durationMillis;
-        final String endValue;
 
         Override(String uid, String summary, String location, String status, long recurrenceIdMillis,
                  String recurrenceIdValue, boolean thisAndFuture, long shiftMillis,
-                 long startMillis, String startValue, boolean hasDuration, long durationMillis,
-                 String endValue) {
+                 net.fortuna.ical4j.model.Date startDate, long startMillis,
+                 boolean hasDuration, long durationMillis) {
             this.uid = uid;
             this.summary = summary;
             this.location = location;
@@ -324,10 +337,9 @@ public class ExpandOccurrences {
             this.thisAndFuture = thisAndFuture;
             this.shiftMillis = shiftMillis;
             this.startMillis = startMillis;
-            this.startValue = startValue;
+            this.startDate = startDate;
             this.hasDuration = hasDuration;
             this.durationMillis = durationMillis;
-            this.endValue = endValue;
         }
     }
 
@@ -369,9 +381,8 @@ public class ExpandOccurrences {
         long durationMillis = hasDuration ? dtend.getTime() - dtstart.getTime() : 0;
 
         return new Override(conv.getUid(), conv.getSummary(), conv.getLocation(), conv.getStatus(),
-                ridDate.getTime(), String.valueOf(ridDate), thisAndFuture, shift,
-                dtstart.getTime(), String.valueOf(dtstart), hasDuration, durationMillis,
-                hasDuration ? String.valueOf(dtend) : "");
+                ridDate.getTime(), renderAs(ridDate, ridDate.getTime()), thisAndFuture, shift,
+                dtstart, dtstart.getTime(), hasDuration, durationMillis);
     }
 
     /**
@@ -413,21 +424,30 @@ public class ExpandOccurrences {
     }
 
     /**
-     * Renders a shifted instant in the SAME RFC 5545 form as the master occurrence it
-     * displaces — UTC against a UTC series, the master's TZID against a zoned one, a
-     * bare DATE against an all-day one.
+     * Renders an instant the way this node reports EVERY occurrence bound: always as a
+     * DATE-TIME, carrying {@code reference}'s zone character — UTC against a UTC
+     * series, the reference's TZID against a zoned one, floating against a floating
+     * one, and UTC for an all-day (VALUE=DATE) bound.
      *
      * <p>This is not cosmetic. {@code ICalEventOccurrence} has no zone field, so the
-     * form of {@code occurrence_start} is the only thing telling a consumer how to
-     * read it. Emitting shifted instants as UTC while their unshifted siblings stay
-     * local puts two rows for the same recurring meeting into one response in
-     * incompatible notations, with nothing to distinguish them — a renderer or a
-     * slot-finder reads the local digits as UTC and lands hours off.
+     * FORM of {@code occurrence_start} is the only thing telling a consumer how to
+     * read it, and every row must therefore agree. Two ways of getting that wrong have
+     * already shipped as defects in this node's history: emitting shifted instants as
+     * UTC while their unshifted siblings stayed local, and emitting an all-day
+     * override as a bare 8-character DATE while its siblings stayed
+     * {@code …T000000Z}. Both put the same meeting into one response twice in
+     * incompatible notations. The second also breaks lexicographic comparison —
+     * {@code "20260812" < "20260812T000000Z"} — which downstream flows rely on for
+     * chronological ordering of fixed-width UTC strings.
+     *
+     * <p>Reporting an all-day bound as UTC midnight rather than a bare DATE is what
+     * ical4j's own period expansion does (it wraps every period bound in a DateTime),
+     * so this matches the form the node has always emitted for all-day occurrences.
      */
-    private static String renderLike(net.fortuna.ical4j.model.Date reference, long millis) {
+    private static String renderAs(net.fortuna.ical4j.model.Date reference, long millis) {
+        DateTime out = new DateTime(millis);
         if (reference instanceof DateTime) {
             DateTime ref = (DateTime) reference;
-            DateTime out = new DateTime(millis);
             if (ref.isUtc()) {
                 out.setUtc(true);
             } else if (ref.getTimeZone() != null) {
@@ -435,9 +455,12 @@ public class ExpandOccurrences {
             }
             // Neither UTC nor zoned: RFC 5545 floating time, which is exactly what a
             // bare DateTime renders as. Nothing more to set.
-            return String.valueOf(out);
+        } else {
+            // A VALUE=DATE bound carries no time-of-day and no zone; its instant is UTC
+            // midnight, which is how ical4j materializes it into a period.
+            out.setUtc(true);
         }
-        return String.valueOf(new net.fortuna.ical4j.model.Date(millis));
+        return String.valueOf(out);
     }
 
     private static long endMillis(Period p, long startMillis) {

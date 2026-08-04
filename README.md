@@ -149,11 +149,25 @@ and the one real meeting is not counted twice. Each occurrence carries:
 `ParseICalendar` and `ListEvents` surface the same information per event
 (`recurrence_id`, `recurrence_id_tzid`, `recurrence_id_range`), and
 `BuildICalendar` writes it back — so `Parse(Build(x))` round-trips an override
-as an override, on VTODOs and VJOURNALs as well as VEVENTs. `BuildICalendar`
-also refuses two shapes that would produce non-conformant or self-contradictory
-iCalendar: the deprecated `RANGE=THISANDPRIOR` (RFC 5545 §3.2.13 says it MUST
-NOT be generated), and a single component carrying both an `rrule` and a
-`recurrence_id`. That matters: a rebuild that dropped `RECURRENCE-ID` would turn
+as an override, on VTODOs and VJOURNALs as well as VEVENTs. The one thing it
+will not write back is the deprecated `RANGE=THISANDPRIOR`, which RFC 5545
+§3.2.13 says MUST NOT be generated: that parameter is **dropped** (not rejected,
+so a legacy RFC 2445 file still round-trips), and an absent `RANGE` means
+exactly what `ExpandOccurrences` already reads `THISANDPRIOR` as — this single
+instance only.
+
+**Not implemented:** an override VEVENT carrying its *own* `RRULE` — the RFC 5546
+way to express a recurrence-*rule* change rather than a reschedule — is treated
+as a plain single-instance override. Its rule is not applied to the series. The
+document still round-trips unchanged; only the rule-change semantics are absent.
+
+**Occurrence time format:** `occurrence_start` / `occurrence_end` /
+`recurrence_id` are always RFC 5545 DATE-TIME, and always the *same* form for
+every row of a given event — UTC (`…Z`) for a UTC-anchored or all-day event,
+local wall-clock for a TZID-anchored or floating one. All-day occurrences are
+therefore reported as UTC midnight (`20260810T000000Z`), not as the bare `DATE`
+the source carried. The message has no timezone field, so that uniformity is
+what makes the values comparable at all. That matters: a rebuild that dropped `RECURRENCE-ID` would turn
 one edited meeting into two independent ones, manufacturing the very phantom
 occurrence described above.
 

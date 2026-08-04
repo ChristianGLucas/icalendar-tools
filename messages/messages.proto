@@ -367,9 +367,20 @@ message ICalEventOccurrence {
   string uid = 1;
   string summary = 2;
   string location = 3;
-  // This occurrence's own start, in the same form as the source VEVENT's DTSTART.
+  // This occurrence's own start, ALWAYS in RFC 5545 DATE-TIME form, and always the
+  // same form for every row of a given event: UTC ("…Z") for a UTC-anchored or
+  // all-day (VALUE=DATE) event, local wall-clock for a TZID-anchored or floating
+  // one. Note an all-day event's occurrences are therefore reported as UTC midnight
+  // ("20260810T000000Z"), not as the bare DATE the source carried.
+  //
+  // The uniformity is load-bearing: this message has no timezone field, so the FORM
+  // is the only thing telling a consumer how to read the value. Two rows of one
+  // event in different notations cannot be told apart — and a bare DATE next to a
+  // DATE-TIME also flips lexicographic ordering, which downstream flows rely on for
+  // chronological comparison of fixed-width strings.
   string occurrence_start = 4;
-  // This occurrence's own end. Empty under the same conditions ICalEvent.dtend is.
+  // This occurrence's own end, in the same form as `occurrence_start`. Empty when
+  // neither a DTEND nor a DURATION could be resolved for it.
   string occurrence_end = 5;
   // True when this occurrence belongs to a recurring series — either it was
   // materialized by expanding an RRULE/RDATE, or it is a RECURRENCE-ID override
@@ -377,9 +388,10 @@ message ICalEventOccurrence {
   // where this is simply its own DTSTART/DTEND.
   bool is_recurring = 6;
   // RFC 5545 §3.8.4.4 RECURRENCE-ID: the instant in the master series that this
-  // occurrence REPLACES. Non-empty only when `is_override` is true. Note this is
-  // the ORIGINAL slot, which is exactly what `occurrence_start` is not: for a
-  // moved instance the two differ, and the original slot is FREE.
+  // occurrence REPLACES, in the same form as `occurrence_start` so the two can be
+  // compared and joined across rows. Non-empty only when `is_override` is true.
+  // Note this is the ORIGINAL slot, which is exactly what `occurrence_start` is
+  // not: for a moved instance the two differ, and the original slot is FREE.
   string recurrence_id = 7;
   // True when this occurrence's details come from a RECURRENCE-ID override rather
   // than from the master series — i.e. the calendar owner edited it. Two cases set

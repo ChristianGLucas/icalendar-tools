@@ -400,6 +400,27 @@ public class ExpandOccurrencesTest {
         // Google's real all-day holiday calendar), so it is pinned here unchanged.
         assertEquals(List.of("20260810T000000Z", "20260812T000000Z"), startsOf(r),
                 "the 11 Aug all-day instance was moved to 14 Aug and must be subtracted from 11 Aug");
+
+        // Widened so the MOVED row is inside the result. Without this the override's
+        // own rendering is never asserted, and an all-day override emitted as a bare
+        // "20260814" instead of "20260814T000000Z" slips through every assertion above.
+        ICalOccurrenceList wide = expand(s, "20260810T000000Z", "20260815T000000Z");
+        assertEquals(List.of("20260810T000000Z", "20260812T000000Z", "20260814T000000Z"),
+                startsOf(wide),
+                "an all-day OVERRIDE must be reported in the same DATE-TIME form as its siblings, "
+                        + "not as a bare DATE — mixing the two breaks parsing and flips the "
+                        + "lexicographic ordering downstream flows rely on");
+        ICalEventOccurrence moved = wide.getOccurrences(2);
+        assertTrue(moved.getIsOverride());
+        assertEquals("20260815T000000Z", moved.getOccurrenceEnd(),
+                "the override's end must use the same form as its start");
+        assertEquals("20260811T000000Z", moved.getRecurrenceId(),
+                "recurrence_id must use that form too, or the 'which slot did this vacate' "
+                        + "join against the master rows cannot be made");
+        for (ICalEventOccurrence o : wide.getOccurrencesList()) {
+            assertEquals(16, o.getOccurrenceStart().length(),
+                    "every row must be one fixed-width form: " + o.getOccurrenceStart());
+        }
     }
 
     @Test
@@ -654,6 +675,15 @@ public class ExpandOccurrencesTest {
         assertEquals(List.of("20260810T090000Z"),
                 startsOf(expand(s, "20260810T000000Z", "20260814T000000Z")),
                 "only the pre-override instance remains in 2026; 11/12/13 Aug were all moved to 2028");
+
+        // ...and the other half of the same requirement: the instances actually ARE in
+        // 2028. Reporting the 2026 slots as free but never surfacing where the meetings
+        // went is "no conflict, go ahead" over two real meetings — under-reporting,
+        // which this node treats as the worse failure everywhere else. A search window
+        // must not need to be widened by the size of the reschedule to find them.
+        assertEquals(List.of("20280811T090000Z", "20280812T090000Z", "20280813T090000Z"),
+                startsOf(expand(s, "20280810T000000Z", "20280816T000000Z")),
+                "the authored override AND the two instances it propagates to must all be found");
     }
 
     @Test
