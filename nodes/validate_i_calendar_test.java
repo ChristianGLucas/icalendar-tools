@@ -35,7 +35,7 @@ public class ValidateICalendarTest {
         }
         public Mutation mutation() {
             return () -> new FlowMutation() {
-                public int addNode(String pkg, String ver, CanvasPosition pos) { return 0; }
+                public int addNode(String pkg, String ver, String node, CanvasPosition pos) { return 0; }
                 public void addEdge(int src, int dst, EdgeCondition cond) {}
             };
         }

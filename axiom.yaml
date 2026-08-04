@@ -1,5 +1,5 @@
 name: christiangeorgelucas/icalendar-tools
-version: 0.1.2
+version: 0.1.3
 language: java
 description: >-
   Composable Axiom iCalendar (RFC 5545) CALENDAR-FILE nodes — parse a whole
@@ -75,15 +75,25 @@ nodes:
       output: ICalOccurrenceList
       description: >-
         Expand every VEVENT in a .ics document — combining its RRULE, RDATE,
-        and EXDATE together per RFC 5545 §3.8.5, and passing non-recurring
-        VEVENTs through unchanged — into concrete occurrences that fall
-        inside a caller-supplied [window_start, window_end) instant window,
-        earliest first. Complementary to christiangeorgelucas/recurrence-tools
-        (which expands one bare RRULE string you supply yourself): this
-        operates on every recurring VEVENT already inside a whole calendar
-        file at once. Capped at `limit` occurrences total (default 500, max
-        5000); a dense window flags truncated=true instead of running
-        unbounded.
+        and EXDATE together per RFC 5545 §3.8.5, honouring RECURRENCE-ID
+        overrides per §3.8.4.4, and passing non-recurring VEVENTs through
+        unchanged — into concrete occurrences that fall inside a
+        caller-supplied [window_start, window_end) instant window, earliest
+        first. When a calendar owner edits ONE instance of a recurring series
+        (what Google Calendar and Outlook emit whenever someone drags a single
+        meeting), that override REPLACES the master's instance rather than
+        adding to it: the overridden instant is subtracted from the expansion,
+        so a moved or cancelled instance leaves its original slot genuinely
+        free instead of reporting it as still busy. Each occurrence carries
+        `recurrence_id` (the slot it replaced), `is_override`, and `status`.
+        Instances cancelled with STATUS:CANCELLED are omitted by default —
+        set `include_cancelled` to receive them. RANGE=THISANDFUTURE is
+        honoured, shifting the override's own instance and every later one.
+        Complementary to christiangeorgelucas/recurrence-tools (which expands
+        one bare RRULE string you supply yourself): this operates on every
+        recurring VEVENT already inside a whole calendar file at once. Capped
+        at `limit` occurrences total (default 500, max 5000); a dense window
+        flags truncated=true instead of running unbounded.
 build:
     maven_deps:
         - org.mnode.ical4j:ical4j:3.2.19

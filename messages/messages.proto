@@ -299,6 +299,14 @@ message ICalExpandInput {
   // dense window can hit it first and return fewer, flagged `truncated`.
   int32 limit = 4;
   Error error = 5;
+  // When false (the default), occurrences whose effective STATUS is CANCELLED
+  // are omitted — a cancelled instance does not happen, so a free/busy or
+  // conflict consumer must not see it. Set true to receive them anyway, each
+  // flagged `status: "CANCELLED"`, e.g. to render a struck-through agenda.
+  // Applies both to a whole VEVENT marked STATUS:CANCELLED (the entire series
+  // is dropped) and to a single cancelled RECURRENCE-ID override instance
+  // (only that instance is dropped, and the master's slot stays vacated).
+  bool include_cancelled = 6;
 }
 
 // One concrete occurrence of a VEVENT, materialized within the requested window.
@@ -311,9 +319,29 @@ message ICalEventOccurrence {
   string occurrence_start = 4;
   // This occurrence's own end. Empty under the same conditions ICalEvent.dtend is.
   string occurrence_end = 5;
-  // True when this occurrence came from expanding an RRULE/RDATE, false when
-  // the VEVENT has no recurrence and this is simply its own DTSTART/DTEND.
+  // True when this occurrence belongs to a recurring series — either it was
+  // materialized by expanding an RRULE/RDATE, or it is a RECURRENCE-ID override
+  // of such a series. False only for a standalone VEVENT with no recurrence,
+  // where this is simply its own DTSTART/DTEND.
   bool is_recurring = 6;
+  // RFC 5545 §3.8.4.4 RECURRENCE-ID: the instant in the master series that this
+  // occurrence REPLACES. Non-empty only when `is_override` is true. Note this is
+  // the ORIGINAL slot, which is exactly what `occurrence_start` is not: for a
+  // moved instance the two differ, and the original slot is FREE.
+  string recurrence_id = 7;
+  // True when this occurrence comes from a RECURRENCE-ID override VEVENT rather
+  // than from the master series — i.e. the calendar owner edited this single
+  // instance (moved it, renamed it, or cancelled it). The master's occurrence at
+  // `recurrence_id` is suppressed and is NOT also returned; expanding the RRULE
+  // and returning both would double-count one real meeting and report the
+  // vacated slot as busy.
+  bool is_override = 8;
+  // The occurrence's effective RFC 5545 STATUS (e.g. "CONFIRMED", "TENTATIVE",
+  // "CANCELLED"), taken from the override VEVENT when this is an override and
+  // from the master VEVENT otherwise. Empty when the source VEVENT declares no
+  // STATUS. CANCELLED occurrences are only ever present when the caller sets
+  // `include_cancelled`.
+  string status = 9;
 }
 
 message ICalOccurrenceList {

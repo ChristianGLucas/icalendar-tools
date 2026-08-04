@@ -207,7 +207,12 @@ public interface AxiomContext {
 
     /** Buffered, additive mutation of the running flow graph. */
     interface FlowMutation {
-        int addNode(String packageName, String packageVersion, CanvasPosition canvasPosition);
+        /** Declare the exact node to append: (package, version, node name). Any
+         *  resolvable node is addable — including nodes from the emitter's own
+         *  package — and a package may carry any number of mutation-capable nodes
+         *  (mutation gap closure P1/P2, 2026-08-01; supersedes the v1
+         *  one-mutation-entry-point-per-package rule). */
+        int addNode(String packageName, String packageVersion, String nodeName, CanvasPosition canvasPosition);
         void addEdge(int srcInstance, int dstInstance, EdgeCondition condition);
     }
 

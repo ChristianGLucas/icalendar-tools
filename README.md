@@ -40,7 +40,7 @@ Every node in this package is a **live, auto-scaling API endpoint** on the
 code, with nothing to self-host.
 
 **📦 See it on the marketplace:**
-https://dev.axiomide.com/marketplace/christiangeorgelucas/icalendar-tools@0.1.0
+https://dev.axiomide.com/marketplace/christiangeorgelucas/icalendar-tools@0.1.3
 
 **Hook it up to an AI agent (MCP).** Add Axiom's hosted MCP server to any MCP
 client and every node becomes a typed tool your agent can call — search the
@@ -75,7 +75,7 @@ axiom invoke christiangeorgelucas/icalendar-tools/ParseICalendar --input '{ ... 
 **Call it over HTTP.**
 
 ```bash
-curl -X POST https://api.axiomide.com/invocations/v1/nodes/christiangeorgelucas/icalendar-tools/0.1.0/ParseICalendar \
+curl -X POST https://api.axiomide.com/invocations/v1/nodes/christiangeorgelucas/icalendar-tools/0.1.3/ParseICalendar \
   -H "Authorization: Bearer $AXIOM_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{ ... }'
@@ -112,7 +112,53 @@ and create an API key under **Console → API Keys**. Docs and sign-up at
 | `BuildICalendar` | Generate a valid, RFC 5545-folded `.ics` document from a structured `ICalCalendar` — the reverse of `ParseICalendar`. |
 | `ValidateICalendar` | Validate a `.ics` document against RFC 5545, reporting every violation found rather than just the first. |
 | `ListEvents` | List the VEVENTs in a `.ics` document, optionally filtered by category or by overlap with an instant window. |
-| `ExpandOccurrences` | Expand every VEVENT's RRULE/RDATE/EXDATE into concrete occurrences within a caller-supplied window. |
+| `ExpandOccurrences` | Expand every VEVENT's RRULE/RDATE/EXDATE into concrete occurrences within a caller-supplied window, with RECURRENCE-ID overrides applied. |
+
+### RECURRENCE-ID overrides (RFC 5545 §3.8.4.4)
+
+When someone edits ONE instance of a recurring series — dragging next Tuesday's
+standup to a different hour, or cancelling just that one — Google Calendar and
+Outlook do not rewrite the RRULE. They append a second VEVENT with the **same
+UID** plus a `RECURRENCE-ID` naming the instant it replaces:
+
+```
+BEGIN:VEVENT
+UID:standup@example.com
+DTSTART:20260810T090000Z
+RRULE:FREQ=DAILY;COUNT=3
+SUMMARY:Daily standup
+END:VEVENT
+BEGIN:VEVENT
+UID:standup@example.com
+RECURRENCE-ID:20260810T090000Z      <-- replaces the 10 Aug 09:00 instance
+DTSTART:20260810T101500Z            <-- ...which now happens at 10:15
+SUMMARY:Daily standup (moved)
+END:VEVENT
+```
+
+`ExpandOccurrences` **subtracts** the overridden instant from the master series,
+so the 10 Aug 09:00 slot comes back **free** — it is not reported as still busy,
+and the one real meeting is not counted twice. Each occurrence carries:
+
+| field | meaning |
+| --- | --- |
+| `recurrence_id` | the master slot this occurrence replaced (empty unless `is_override`) — note this is the **vacated** time, which is exactly what `occurrence_start` is not |
+| `is_override` | true when the instance was individually edited |
+| `status` | the effective RFC 5545 `STATUS` (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) |
+
+Cancelled instances (`STATUS:CANCELLED`) are **omitted by default** — a cancelled
+instance does not happen, so a free/busy or conflict consumer must not see it.
+Set `include_cancelled: true` to receive them anyway, each flagged
+`status: "CANCELLED"`, e.g. to render a struck-through agenda. The same applies
+to a whole series marked `STATUS:CANCELLED`.
+
+`RANGE=THISANDFUTURE` (RFC 5545 §3.2.13) is honoured: the override governs its
+own instance **and every later one**, which are shifted by its
+(`DTSTART` − `RECURRENCE-ID`) delta and take its summary/location/status.
+
+Subtraction is keyed off the whole calendar rather than the requested window, so
+an override that relocates an instance *outside* the window still frees the slot
+it vacated *inside* it.
 
 ## Bounds & security
 
