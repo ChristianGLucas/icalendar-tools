@@ -146,6 +146,13 @@ and the one real meeting is not counted twice. Each occurrence carries:
 | `is_override` | true when the instance was individually edited |
 | `status` | the effective RFC 5545 `STATUS` (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) |
 
+`ParseICalendar` and `ListEvents` surface the same information per event
+(`recurrence_id`, `recurrence_id_tzid`, `recurrence_id_range`), and
+`BuildICalendar` writes it back — so `Parse(Build(x))` round-trips an override
+as an override. That matters: a rebuild that dropped `RECURRENCE-ID` would turn
+one edited meeting into two independent ones, manufacturing the very phantom
+occurrence described above.
+
 Cancelled instances (`STATUS:CANCELLED`) are **omitted by default** — a cancelled
 instance does not happen, so a free/busy or conflict consumer must not see it.
 Set `include_cancelled: true` to receive them anyway, each flagged

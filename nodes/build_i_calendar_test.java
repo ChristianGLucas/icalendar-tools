@@ -246,4 +246,144 @@ public class BuildICalendarTest {
         assertTrue(result.hasError());
         assertEquals("INVALID_ARGUMENT", result.getError().getCode());
     }
+
+    // A calendar whose recurring series has ONE instance moved via RECURRENCE-ID —
+    // what Google Calendar and Outlook emit when someone drags a single occurrence.
+    static final String OVERRIDE_ICS = String.join("\r\n",
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//Test//Test//EN",
+            "BEGIN:VEVENT",
+            "UID:rt-1@example.com",
+            "DTSTAMP:20260801T000000Z",
+            "DTSTART:20260810T090000Z",
+            "DTEND:20260810T100000Z",
+            "RRULE:FREQ=DAILY;COUNT=3",
+            "SUMMARY:Daily standup",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:rt-1@example.com",
+            "RECURRENCE-ID:20260811T090000Z",
+            "DTSTAMP:20260801T000000Z",
+            "DTSTART:20260811T140000Z",
+            "DTEND:20260811T150000Z",
+            "SUMMARY:Daily standup (moved)",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "");
+
+    @Test
+    public void testRoundTripPreservesRecurrenceIdSoTheOverrideStaysAnOverride() {
+        // This is a CORRECTNESS test, not a fidelity nicety. RECURRENCE-ID is what
+        // makes the second VEVENT REPLACE the master's 11 Aug instance instead of
+        // adding to it. Drop it on the round-trip and the rebuilt calendar has two
+        // independent meetings where the user has one — i.e. Parse+Build would
+        // MANUFACTURE exactly the phantom occurrence ExpandOccurrences removes.
+        AxiomContext ax = new TestContext();
+
+        ICalCalendar parsed = ParseICalendar.parseICalendar(ax,
+                ICalTextInput.newBuilder().setIcsText(OVERRIDE_ICS).build());
+        assertFalse(parsed.hasError(), "unexpected parse error: " + parsed.getError());
+        assertEquals(2, parsed.getEventsCount());
+
+        // ParseICalendar must SURFACE it — before 0.1.3 the field did not exist, so a
+        // consumer could not even tell which VEVENT was the override.
+        ICalEvent master = parsed.getEvents(0);
+        ICalEvent override = parsed.getEvents(1);
+        assertEquals("", master.getRecurrenceId(), "the master series carries no RECURRENCE-ID");
+        assertEquals("20260811T090000Z", override.getRecurrenceId(),
+                "the override must report which instant it replaces");
+
+        // BuildICalendar must EMIT it back.
+        ICalTextOutput built = BuildICalendar.buildICalendar(ax, parsed);
+        assertFalse(built.hasError(), "unexpected build error: " + built.getError());
+        String unfolded = built.getIcsText().replace("\r\n ", "");
+        assertTrue(unfolded.contains("RECURRENCE-ID"),
+                "the rebuilt .ics dropped RECURRENCE-ID, silently turning one edited meeting into two");
+
+        // ...and the rebuilt document must still parse back to the same override.
+        ICalCalendar reparsed = ParseICalendar.parseICalendar(ax,
+                ICalTextInput.newBuilder().setIcsText(built.getIcsText()).build());
+        assertFalse(reparsed.hasError(), "unexpected reparse error: " + reparsed.getError());
+        assertEquals("20260811T090000Z", reparsed.getEvents(1).getRecurrenceId(),
+                "Parse(Build(x)) must round-trip RECURRENCE-ID");
+
+        // The end-to-end proof: expanding the REBUILT calendar must give the same
+        // three occurrences as expanding the original — no phantom at 11 Aug 09:00.
+        gen.Messages.ICalOccurrenceList expanded = ExpandOccurrences.expandOccurrences(ax,
+                gen.Messages.ICalExpandInput.newBuilder()
+                        .setIcsText(built.getIcsText())
+                        .setWindowStart("20260810T000000Z")
+                        .setWindowEnd("20260813T000000Z")
+                        .build());
+        assertFalse(expanded.hasError(), "unexpected expand error: " + expanded.getError());
+        List<String> starts = new java.util.ArrayList<>();
+        for (gen.Messages.ICalEventOccurrence o : expanded.getOccurrencesList()) {
+            starts.add(o.getOccurrenceStart());
+        }
+        assertEquals(List.of("20260810T090000Z", "20260811T140000Z", "20260812T090000Z"), starts,
+                "expanding the REBUILT calendar must not resurrect the vacated 11 Aug 09:00 slot");
+    }
+
+    @Test
+    public void testRoundTripPreservesRecurrenceIdRangeAndTzid() {
+        AxiomContext ax = new TestContext();
+        String src = String.join("\r\n",
+                "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//EN",
+                "BEGIN:VEVENT", "UID:rt-2@example.com", "DTSTAMP:20260801T000000Z",
+                "DTSTART;TZID=America/New_York:20260810T090000",
+                "DTEND;TZID=America/New_York:20260810T100000",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:NY standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:rt-2@example.com",
+                "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=America/New_York:20260811T090000",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART;TZID=America/New_York:20260811T110000",
+                "DTEND;TZID=America/New_York:20260811T120000",
+                "SUMMARY:NY standup (new time)", "END:VEVENT",
+                "END:VCALENDAR", "");
+
+        ICalCalendar parsed = ParseICalendar.parseICalendar(ax,
+                ICalTextInput.newBuilder().setIcsText(src).build());
+        assertFalse(parsed.hasError(), "unexpected parse error: " + parsed.getError());
+        ICalEvent ov = parsed.getEvents(1);
+        // Same convention as dtstart/dtstart_tzid: the raw RFC 5545 value, with the
+        // zone carried alongside it rather than folded into the string.
+        assertEquals("20260811T090000", ov.getRecurrenceId(),
+                "the RECURRENCE-ID value is reported verbatim");
+        assertEquals("America/New_York", ov.getRecurrenceIdTzid(),
+                "losing the TZID would re-anchor the replaced instant to the wrong zone, "
+                        + "so the subtraction would miss and the phantom would return");
+        assertEquals("THISANDFUTURE", ov.getRecurrenceIdRange(),
+                "RANGE decides whether the override governs LATER instances too - losing it "
+                        + "would silently narrow the edit to a single occurrence");
+
+        ICalTextOutput built = BuildICalendar.buildICalendar(ax, parsed);
+        assertFalse(built.hasError(), "unexpected build error: " + built.getError());
+        String unfolded = built.getIcsText().replace("\r\n ", "");
+        assertTrue(unfolded.contains("RANGE=THISANDFUTURE"),
+                "RANGE=THISANDFUTURE must survive the rebuild");
+
+        ICalCalendar reparsed = ParseICalendar.parseICalendar(ax,
+                ICalTextInput.newBuilder().setIcsText(built.getIcsText()).build());
+        assertEquals("THISANDFUTURE", reparsed.getEvents(1).getRecurrenceIdRange());
+        assertEquals(ov.getRecurrenceId(), reparsed.getEvents(1).getRecurrenceId(),
+                "the replaced instant must survive the rebuild unchanged");
+        assertEquals("America/New_York", reparsed.getEvents(1).getRecurrenceIdTzid(),
+                "the TZID must survive the rebuild too");
+
+        // End-to-end: the REBUILT calendar must expand identically to the original,
+        // THISANDFUTURE shift and all. 2026-08 is EDT (UTC-4): 09:00 NY == 13:00Z,
+        // 11:00 NY == 15:00Z. Hand-computed truth for [10 Aug, 13 Aug):
+        //   10 Aug 13:00Z (untouched) | 11 Aug 15:00Z | 12 Aug 15:00Z
+        gen.Messages.ICalOccurrenceList a = ExpandOccurrences.expandOccurrences(ax,
+                gen.Messages.ICalExpandInput.newBuilder().setIcsText(src)
+                        .setWindowStart("20260810T000000Z").setWindowEnd("20260813T000000Z").build());
+        gen.Messages.ICalOccurrenceList b = ExpandOccurrences.expandOccurrences(ax,
+                gen.Messages.ICalExpandInput.newBuilder().setIcsText(built.getIcsText())
+                        .setWindowStart("20260810T000000Z").setWindowEnd("20260813T000000Z").build());
+        assertEquals(3, a.getOccurrencesCount(),
+                "the THISANDFUTURE override replaces the 11 Aug instance, it does not add a 4th");
+        assertEquals(a.getOccurrencesList(), b.getOccurrencesList(),
+                "a rebuilt calendar must expand to exactly the same occurrences as the original");
+    }
 }

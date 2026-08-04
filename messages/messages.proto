@@ -146,6 +146,26 @@ message ICalEvent {
   string classification = 23;
   // URL.
   string url = 24;
+  // RECURRENCE-ID (RFC 5545 §3.8.4.4), in the form documented at the top of
+  // this file. Non-empty ONLY on an override VEVENT: a second component sharing
+  // this event's UID that replaces one instance of the master series, which is
+  // what Google Calendar and Outlook emit whenever someone edits a single
+  // occurrence of a recurring meeting. Empty on a master VEVENT and on any
+  // non-recurring event.
+  //
+  // This is load-bearing, not decorative: an event carrying a `recurrence_id`
+  // SUPPRESSES the master series' instance at that instant (see
+  // ExpandOccurrences). Dropping it turns one edited meeting into two — the
+  // phantom at the vacated slot plus the real one — so BuildICalendar emits it
+  // back and ParseICalendar/ListEvents report it.
+  string recurrence_id = 25;
+  // RECURRENCE-ID's TZID parameter, mirroring `dtstart_tzid`. Empty when
+  // `recurrence_id` is floating, all-day, or already carries a trailing "Z".
+  string recurrence_id_tzid = 26;
+  // RECURRENCE-ID's RANGE parameter (RFC 5545 §3.2.13). Empty (the default)
+  // means the override replaces only its own instance; "THISANDFUTURE" means it
+  // also governs every later instance in the series.
+  string recurrence_id_range = 27;
 }
 
 // A VTODO (RFC 5545 §3.6.2) — an action item / task.

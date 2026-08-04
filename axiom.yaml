@@ -31,8 +31,12 @@ nodes:
       description: >-
         Parse a .ics VCALENDAR document into a structured ICalCalendar: every
         VEVENT, VTODO, and VJOURNAL with its fields (summary, start/end,
-        location, organizer/attendees, status, UID, RRULE string, VALARMs,
-        categories, ...), plus PRODID/VERSION/CALSCALE/METHOD. Malformed input
+        location, organizer/attendees, status, UID, RRULE string,
+        RECURRENCE-ID, VALARMs, categories, ...), plus
+        PRODID/VERSION/CALSCALE/METHOD. An override VEVENT — one that edits a
+        single instance of a recurring series — is identified by a non-empty
+        `recurrence_id` naming the instant it replaces, with
+        `recurrence_id_range` carrying RANGE=THISANDFUTURE. Malformed input
         (not iCalendar at all, or too large) returns a structured error rather
         than crashing; individual malformed components are preserved as-is
         (e.g. a missing UID comes back as an empty uid field) rather than
@@ -44,7 +48,10 @@ nodes:
       description: >-
         Generate a valid, RFC 5545-folded .ics VCALENDAR document from a
         structured ICalCalendar (events/todos/journals) — the reverse of
-        ParseICalendar; Parse(Build(x)) round-trips every field. Fills a
+        ParseICalendar; Parse(Build(x)) round-trips every field, including
+        RECURRENCE-ID (with its TZID and RANGE), so a rebuilt calendar still
+        expands to the same occurrences and an edited instance does not
+        silently become a second, duplicate meeting. Fills a
         default PRODID/VERSION when the caller leaves them empty. Rejects a
         calendar with zero components, or a component missing its required
         UID, with a structured error rather than emitting invalid iCalendar.
@@ -67,8 +74,12 @@ nodes:
         List the VEVENTs in a .ics document, optionally filtered by exact
         (case-insensitive) category or by overlap with a [window_start,
         window_end) instant window — leave both filters empty to list every
-        VEVENT. Distinct from ParseICalendar: this returns only VEVENTs
-        (never VTODO/VJOURNAL) and supports server-side filtering instead of
+        VEVENT. Each event carries `recurrence_id` (non-empty only on an
+        override VEVENT that replaces one instance of a recurring series) and
+        `status`, so a caller can tell which instances were individually
+        edited or cancelled. Distinct from ParseICalendar: this returns only
+        VEVENTs (never VTODO/VJOURNAL) and supports server-side filtering
+        instead of
         the caller filtering the full parse result themselves.
     - name: ExpandOccurrences
       input: ICalExpandInput

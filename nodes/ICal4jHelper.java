@@ -48,6 +48,7 @@ import net.fortuna.ical4j.model.property.PercentComplete;
 import net.fortuna.ical4j.model.property.Priority;
 import net.fortuna.ical4j.model.property.ProdId;
 import net.fortuna.ical4j.model.property.RDate;
+import net.fortuna.ical4j.model.property.RecurrenceId;
 import net.fortuna.ical4j.model.property.RRule;
 import net.fortuna.ical4j.model.property.Repeat;
 import net.fortuna.ical4j.model.property.Sequence;
@@ -60,6 +61,7 @@ import net.fortuna.ical4j.model.property.Url;
 import net.fortuna.ical4j.model.property.Version;
 import net.fortuna.ical4j.model.parameter.Cn;
 import net.fortuna.ical4j.model.parameter.PartStat;
+import net.fortuna.ical4j.model.parameter.Range;
 import net.fortuna.ical4j.model.parameter.Related;
 import net.fortuna.ical4j.model.parameter.Role;
 import net.fortuna.ical4j.model.parameter.Rsvp;
@@ -468,7 +470,14 @@ final class ICal4jHelper {
                 .setDtstamp(valueOf(e, Property.DTSTAMP))
                 .setTransparency(valueOf(e, Property.TRANSP))
                 .setClassification(valueOf(e, Property.CLASS))
-                .setUrl(valueOf(e, Property.URL));
+                .setUrl(valueOf(e, Property.URL))
+                // RECURRENCE-ID (RFC 5545 §3.8.4.4). Dropping this on the way in would
+                // silently convert an override VEVENT into a duplicate of the master's
+                // instance, manufacturing the very phantom occurrence ExpandOccurrences
+                // exists to remove.
+                .setRecurrenceId(dateValueOf(e, Property.RECURRENCE_ID))
+                .setRecurrenceIdTzid(dateTzidOf(e, Property.RECURRENCE_ID))
+                .setRecurrenceIdRange(paramValue(firstProperty(e, Property.RECURRENCE_ID), Parameter.RANGE));
         String dtstart = dateValueOf(e, Property.DTSTART);
         b.setAllDay(!dtstart.isEmpty() && !dtstart.contains("T"));
         Property seq = firstProperty(e, Property.SEQUENCE);
@@ -503,6 +512,14 @@ final class ICal4jHelper {
             if (!e.getDtend().isEmpty()) {
                 DtEnd p = new DtEnd();
                 setDateProperty(p, e.getDtend(), e.getDtendTzid());
+                props.add(p);
+            }
+            if (!e.getRecurrenceId().isEmpty()) {
+                RecurrenceId p = new RecurrenceId();
+                setDateProperty(p, e.getRecurrenceId(), e.getRecurrenceIdTzid());
+                if (!e.getRecurrenceIdRange().isEmpty()) {
+                    p.getParameters().add(new Range(e.getRecurrenceIdRange()));
+                }
                 props.add(p);
             }
             if (!e.getStatus().isEmpty()) props.add(new Status(e.getStatus()));

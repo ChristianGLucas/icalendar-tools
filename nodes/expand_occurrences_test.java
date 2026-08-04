@@ -449,6 +449,30 @@ public class ExpandOccurrencesTest {
     }
 
     @Test
+    public void testThisAndFutureShiftPreservesFullDurationOfALongOccurrence() {
+        // The shifted path re-derives start AND end itself. ical4j does NOT clip a
+        // returned period to the query window (verified against the deployed 0.1.2:
+        // a 6-day event queried with a 1-day window inside it comes back with its
+        // true 20260810->20260816 bounds). If it ever did, shifting a clipped bound
+        // would silently corrupt the instant — so the full duration is pinned here.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:long1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T000000Z", "DTEND:20260812T000000Z",
+                "RRULE:FREQ=WEEKLY;COUNT=2", "SUMMARY:Long block", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:long1", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260817T000000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260817T060000Z", "DTEND:20260819T060000Z",
+                "SUMMARY:Long block (shifted)", "END:VEVENT");
+
+        // Query a 1-hour window sitting INSIDE the shifted second occurrence.
+        ICalOccurrenceList r = expand(s, "20260818T000000Z", "20260818T010000Z");
+        assertEquals(List.of("20260817T060000Z"), startsOf(r),
+                "a multi-day occurrence overlapping the window is returned with its TRUE start");
+        assertEquals("20260819T060000Z", r.getOccurrences(0).getOccurrenceEnd(),
+                "the +6h shift must move the end by the same delta, preserving the 2-day duration");
+    }
+
+    @Test
     public void testMultipleOverridesOnOneSeries() {
         // Two separate instances edited; both must be subtracted, and each override
         // must attach to its OWN recurrence_id rather than the first one found.
