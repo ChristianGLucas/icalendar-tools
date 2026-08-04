@@ -48,10 +48,16 @@ nodes:
       description: >-
         Generate a valid, RFC 5545-folded .ics VCALENDAR document from a
         structured ICalCalendar (events/todos/journals) — the reverse of
-        ParseICalendar; Parse(Build(x)) round-trips every field, including
-        RECURRENCE-ID (with its TZID and RANGE), so a rebuilt calendar still
+        ParseICalendar; Parse(Build(x)) round-trips every field this package
+        models, on VEVENTs, VTODOs and VJOURNALs alike — including
+        RECURRENCE-ID with its TZID and RANGE, so a rebuilt calendar still
         expands to the same occurrences and an edited instance does not
-        silently become a second, duplicate meeting. Fills a
+        silently become a second, duplicate meeting. Properties the
+        ICalCalendar envelope does not model (DURATION, EXRULE, ATTACH, GEO,
+        RELATED-TO, X- extensions) are not preserved. Rejects a component that
+        is both a recurring master and a RECURRENCE-ID override, and refuses to
+        emit the deprecated RANGE=THISANDPRIOR, rather than producing
+        non-conformant iCalendar. Fills a
         default PRODID/VERSION when the caller leaves them empty. Rejects a
         calendar with zero components, or a component missing its required
         UID, with a structured error rather than emitting invalid iCalendar.
@@ -99,7 +105,13 @@ nodes:
         `recurrence_id` (the slot it replaced), `is_override`, and `status`.
         Instances cancelled with STATUS:CANCELLED are omitted by default —
         set `include_cancelled` to receive them. RANGE=THISANDFUTURE is
-        honoured, shifting the override's own instance and every later one.
+        honoured per RFC 5545 §3.8.4.4: the override's own instance and every
+        later one are rescheduled by the same time difference AND take the
+        override's duration. Note the window filter is an OVERLAP filter, and
+        an occurrence of a RECURRING VEVENT that merely touches a bound is
+        returned (a non-recurring one in the same position is not) — if you
+        are computing free/busy, treat a touching occurrence as
+        non-conflicting yourself.
         Complementary to christiangeorgelucas/recurrence-tools (which expands
         one bare RRULE string you supply yourself): this operates on every
         recurring VEVENT already inside a whole calendar file at once. Capped

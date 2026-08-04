@@ -382,8 +382,9 @@ public class ExpandOccurrencesTest {
 
     @Test
     public void testAllDayRecurrenceIdOverride() {
-        // All-day (VALUE=DATE) recurring event with one day moved. DATE values carry
-        // no instant, so the subtraction falls back to literal-value matching.
+        // All-day (VALUE=DATE) recurring event with one day moved. ical4j resolves a
+        // DATE value to UTC midnight on BOTH sides, so the ordinary instant-based
+        // subtraction applies here with no special case.
         String s = ics(
                 "BEGIN:VEVENT", "UID:ad1", "DTSTAMP:20260801T000000Z",
                 "DTSTART;VALUE=DATE:20260810", "DTEND;VALUE=DATE:20260811",
@@ -461,15 +462,17 @@ public class ExpandOccurrencesTest {
                 "RRULE:FREQ=WEEKLY;COUNT=2", "SUMMARY:Long block", "END:VEVENT",
                 "BEGIN:VEVENT", "UID:long1", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260817T000000Z",
                 "DTSTAMP:20260801T000000Z",
-                "DTSTART:20260817T060000Z", "DTEND:20260819T060000Z",
+                "DTSTART:20260817T060000Z", "DTEND:20260818T060000Z",
                 "SUMMARY:Long block (shifted)", "END:VEVENT");
 
-        // Query a 1-hour window sitting INSIDE the shifted second occurrence.
+        // The override's duration (1 day) deliberately DIFFERS from the master's (2
+        // days). If they matched, "adopt the override's duration" and "shift the
+        // master's end" would give the same answer and this could not discriminate.
         ICalOccurrenceList r = expand(s, "20260818T000000Z", "20260818T010000Z");
         assertEquals(List.of("20260817T060000Z"), startsOf(r),
                 "a multi-day occurrence overlapping the window is returned with its TRUE start");
-        assertEquals("20260819T060000Z", r.getOccurrences(0).getOccurrenceEnd(),
-                "the +6h shift must move the end by the same delta, preserving the 2-day duration");
+        assertEquals("20260818T060000Z", r.getOccurrences(0).getOccurrenceEnd(),
+                "the authored override keeps its OWN 1-day duration, not the master's 2-day one");
     }
 
     @Test
@@ -515,6 +518,192 @@ public class ExpandOccurrencesTest {
                 "recurring occurrences touching window_end are included (ical4j path)");
         assertEquals(unpadded2, padded2,
                 "the padded path must agree at the closing edge too");
+    }
+
+    // ---- RFC 5545 §3.8.4.4 duration propagation --------------------------------
+    //
+    // "When the given recurrence instance is rescheduled, all subsequent instances
+    //  are also rescheduled by the same time difference. [...] Similarly, if the
+    //  duration of the given recurrence instance is modified, then all subsequen[t]
+    //  instances are also modified to have this same duration."
+    //
+    // Carrying the MASTER's duration forward instead fails in BOTH directions, and
+    // both are the defect class this release exists to remove.
+
+    @Test
+    public void testThisAndFutureShortenedInstancePropagatesTheSHORTERDuration() {
+        // Master 09:00-10:00 daily. From 11 Aug the meeting is cut to 15 minutes, with
+        // NO change of start time (zero delta). Hand-computed truth: from 11 Aug on,
+        // every instance runs 09:00-09:15, so 09:15-10:00 is FREE every day.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:d2", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=4", "SUMMARY:Standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:d2", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260811T090000Z", "DTEND:20260811T091500Z",
+                "SUMMARY:Standup (now 15 min)", "END:VEVENT");
+
+        ICalOccurrenceList r = expand(s, "20260810T000000Z", "20260814T000000Z");
+        assertFalse(r.hasError(), "unexpected error: " + r.getError());
+        assertEquals(List.of("20260810T090000Z", "20260811T090000Z",
+                "20260812T090000Z", "20260813T090000Z"), startsOf(r));
+        assertEquals("20260810T100000Z", r.getOccurrences(0).getOccurrenceEnd(),
+                "the instance BEFORE the override keeps the master's hour");
+        assertEquals("20260811T091500Z", r.getOccurrences(1).getOccurrenceEnd(),
+                "the authored override is 15 minutes");
+        assertEquals("20260812T091500Z", r.getOccurrences(2).getOccurrenceEnd(),
+                "a PROPAGATED instance must adopt the override's 15-minute duration");
+        assertEquals("20260813T091500Z", r.getOccurrences(3).getOccurrenceEnd());
+
+        // The consequence, stated as the question a conflict checker actually asks:
+        // is 12 Aug 09:30-09:45 free? The owner gave those minutes back, so yes.
+        assertEquals(List.of(), startsOf(expand(s, "20260812T093000Z", "20260812T094500Z")),
+                "time released by shortening the series must not still read as busy");
+    }
+
+    @Test
+    public void testThisAndFutureLengthenedInstancePropagatesTheLONGERDuration() {
+        // Master 09:00-10:00 daily. From 11 Aug it moves to 11:00 AND grows to 90 min.
+        // Hand-computed truth: from 11 Aug on, every instance runs 11:00-12:30.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:d3", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=4", "SUMMARY:Standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:d3", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260811T110000Z", "DTEND:20260811T123000Z",
+                "SUMMARY:Standup (now 90 min)", "END:VEVENT");
+
+        ICalOccurrenceList r = expand(s, "20260810T000000Z", "20260814T000000Z");
+        assertFalse(r.hasError(), "unexpected error: " + r.getError());
+        assertEquals(List.of("20260810T090000Z", "20260811T110000Z",
+                "20260812T110000Z", "20260813T110000Z"), startsOf(r));
+        assertEquals("20260812T123000Z", r.getOccurrences(2).getOccurrenceEnd(),
+                "a PROPAGATED instance must adopt the override's 90-minute duration");
+
+        // This direction is the dangerous one: under-reporting busy time tells a
+        // booking agent a real meeting's slot is free.
+        assertEquals(List.of("20260812T110000Z"),
+                startsOf(expand(s, "20260812T120500Z", "20260812T122500Z")),
+                "the last 30 minutes of a lengthened meeting must read as BUSY");
+    }
+
+    @Test
+    public void testThisAndFutureOccurrencesAreRenderedInTheSameFormAsTheirSiblings() {
+        // A TZID-anchored series. ICalEventOccurrence carries no zone field, so the
+        // FORM of occurrence_start is all a consumer has to interpret it by. If shifted
+        // instances came back as UTC while their unshifted siblings stayed local, one
+        // response would hold the same meeting twice in incompatible notations with
+        // nothing to tell them apart — and a renderer reading local digits as UTC lands
+        // 4 hours off. Every row of one series must be in one form.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:tz9", "DTSTAMP:20260801T000000Z",
+                "DTSTART;TZID=America/New_York:20260810T090000",
+                "DTEND;TZID=America/New_York:20260810T100000",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:NY standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:tz9",
+                "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=America/New_York:20260811T090000",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART;TZID=America/New_York:20260811T110000",
+                "DTEND;TZID=America/New_York:20260811T120000",
+                "SUMMARY:NY standup (new time)", "END:VEVENT");
+
+        ICalOccurrenceList r = expand(s, "20260810T000000Z", "20260813T000000Z");
+        assertFalse(r.hasError(), "unexpected error: " + r.getError());
+        assertEquals(List.of("20260810T090000", "20260811T110000", "20260812T110000"), startsOf(r),
+                "every occurrence of a TZID-anchored series is reported in that series' local form");
+        for (ICalEventOccurrence o : r.getOccurrencesList()) {
+            assertFalse(o.getOccurrenceStart().endsWith("Z"),
+                    "no row of a zoned series may be silently switched to UTC: " + o.getOccurrenceStart());
+            assertFalse(o.getOccurrenceEnd().endsWith("Z"),
+                    "...including the end: " + o.getOccurrenceEnd());
+        }
+        assertEquals("20260812T120000", r.getOccurrences(2).getOccurrenceEnd());
+
+        // A UTC-anchored series must stay UTC, so the rule is "match the source", not
+        // "always emit local".
+        String utc = ics(
+                "BEGIN:VEVENT", "UID:u9", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:UTC standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:u9", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260811T110000Z", "DTEND:20260811T120000Z",
+                "SUMMARY:UTC standup (new time)", "END:VEVENT");
+        assertEquals(List.of("20260810T090000Z", "20260811T110000Z", "20260812T110000Z"),
+                startsOf(expand(utc, "20260810T000000Z", "20260813T000000Z")),
+                "a UTC series stays UTC");
+    }
+
+    @Test
+    public void testFarFutureThisAndFutureRescheduleStillVacatesTheOriginalSlots() {
+        // A series postponed by two years. The padding this node adds to catch
+        // shifted instances is capped for cost, but the SHIFT itself must never be
+        // clamped: clamping it silently reports the vacated 2026 slots as busy, which
+        // is precisely the phantom class this release removes.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:far", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=4", "SUMMARY:Standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:far", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20280811T090000Z", "DTEND:20280811T100000Z",
+                "SUMMARY:Standup (postponed 2y)", "END:VEVENT");
+
+        assertEquals(List.of("20260810T090000Z"),
+                startsOf(expand(s, "20260810T000000Z", "20260814T000000Z")),
+                "only the pre-override instance remains in 2026; 11/12/13 Aug were all moved to 2028");
+    }
+
+    @Test
+    public void testAuthoredOverrideAndItsPropagatedSiblingsShareOneBoundaryRule() {
+        // An authored override VEVENT is a NON-recurring component and a propagated
+        // instance is derived from a recurring one — and ical4j filters those two
+        // kinds differently at the window edges. Within a single series that must not
+        // show: the same question about two instances of one meeting must get the
+        // same kind of answer.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:k1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=4", "SUMMARY:K", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:k1", "RECURRENCE-ID;RANGE=THISANDFUTURE:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260811T110000Z", "DTEND:20260811T120000Z",
+                "SUMMARY:K moved", "END:VEVENT");
+
+        // Both windows start exactly when their occurrence ENDS (12:00).
+        List<String> authored = startsOf(expand(s, "20260811T120000Z", "20260811T130000Z"));
+        List<String> propagated = startsOf(expand(s, "20260812T120000Z", "20260812T130000Z"));
+        assertEquals(authored.size(), propagated.size(),
+                "the authored override and its propagated sibling must answer the same "
+                        + "boundary question the same way — got authored=" + authored
+                        + " propagated=" + propagated);
+        assertEquals(List.of("20260811T110000Z"), authored,
+                "recurring-series occurrences touching window_start are included");
+        assertEquals(List.of("20260812T110000Z"), propagated);
+    }
+
+    @Test
+    public void testMalformedOverrideWithNoDtstartLeavesTheMasterInstanceStanding() {
+        // An override with a RECURRENCE-ID but no DTSTART names an instant to replace
+        // and supplies no replacement. Honouring the suppression would DELETE a real
+        // meeting and put nothing in its place — strictly worse than the phantom this
+        // node removes — so the malformed component is ignored and the master's
+        // instance survives.
+        String s = ics(
+                "BEGIN:VEVENT", "UID:m1", "DTSTAMP:20260801T000000Z",
+                "DTSTART:20260810T090000Z", "DTEND:20260810T100000Z",
+                "RRULE:FREQ=DAILY;COUNT=3", "SUMMARY:Standup", "END:VEVENT",
+                "BEGIN:VEVENT", "UID:m1", "RECURRENCE-ID:20260811T090000Z",
+                "DTSTAMP:20260801T000000Z", "SUMMARY:Broken override", "END:VEVENT");
+
+        ICalOccurrenceList r = expand(s, "20260810T000000Z", "20260813T000000Z");
+        assertFalse(r.hasError(), "a malformed component must not fail the whole call: " + r.getError());
+        assertEquals(List.of("20260810T090000Z", "20260811T090000Z", "20260812T090000Z"), startsOf(r),
+                "11 Aug must NOT vanish: an override with no DTSTART replaces nothing");
+        assertFalse(r.getOccurrences(1).getIsOverride(),
+                "the surviving 11 Aug instance is the master's, not an override");
     }
 
     @Test

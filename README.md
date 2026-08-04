@@ -149,19 +149,41 @@ and the one real meeting is not counted twice. Each occurrence carries:
 `ParseICalendar` and `ListEvents` surface the same information per event
 (`recurrence_id`, `recurrence_id_tzid`, `recurrence_id_range`), and
 `BuildICalendar` writes it back — so `Parse(Build(x))` round-trips an override
-as an override. That matters: a rebuild that dropped `RECURRENCE-ID` would turn
+as an override, on VTODOs and VJOURNALs as well as VEVENTs. `BuildICalendar`
+also refuses two shapes that would produce non-conformant or self-contradictory
+iCalendar: the deprecated `RANGE=THISANDPRIOR` (RFC 5545 §3.2.13 says it MUST
+NOT be generated), and a single component carrying both an `rrule` and a
+`recurrence_id`. That matters: a rebuild that dropped `RECURRENCE-ID` would turn
 one edited meeting into two independent ones, manufacturing the very phantom
 occurrence described above.
 
 Cancelled instances (`STATUS:CANCELLED`) are **omitted by default** — a cancelled
 instance does not happen, so a free/busy or conflict consumer must not see it.
 Set `include_cancelled: true` to receive them anyway, each flagged
-`status: "CANCELLED"`, e.g. to render a struck-through agenda. The same applies
-to a whole series marked `STATUS:CANCELLED`.
+`status: "CANCELLED"`, e.g. to render a struck-through agenda. A whole series
+marked `STATUS:CANCELLED` contributes no occurrences either — but an override
+instance is judged on **its own** status, so a cancelled series that still
+carries an explicitly `CONFIRMED` override instance reports that one instance.
+Discarding it would drop an occurrence the calendar says is happening, and
+losing a real meeting is worse than reporting a surprising one.
 
 `RANGE=THISANDFUTURE` (RFC 5545 §3.2.13) is honoured: the override governs its
-own instance **and every later one**, which are shifted by its
-(`DTSTART` − `RECURRENCE-ID`) delta and take its summary/location/status.
+own instance **and every later one**. Per RFC 5545 §3.8.4.4 those later instances
+are rescheduled "by the same time difference" *and* "modified to have this same
+duration" — so they take the override's `DTSTART` offset, **its duration**, and
+its summary/location/status. Getting the duration wrong misreports in both
+directions: a shortened series would keep reporting the minutes the owner gave
+back as busy, and a lengthened one would report free time over a real meeting.
+
+### Window boundaries
+
+An occurrence is returned when it **overlaps** the window, so a long event
+straddling it is reported rather than missed. One inherited ical4j quirk is worth
+stating plainly: an occurrence of a **recurring** VEVENT that merely *touches* a
+bound — ends exactly at `window_start`, or starts exactly at `window_end` — **is**
+returned, while a non-recurring VEVENT in the same position is not. If you are
+computing free/busy, treat a touching occurrence as non-conflicting yourself
+rather than relying on the filter to drop it.
 
 Subtraction is keyed off the whole calendar rather than the requested window, so
 an override that relocates an instance *outside* the window still frees the slot

@@ -202,6 +202,15 @@ message ICalTodo {
   string dtstamp = 23;
   string classification = 24;
   string url = 25;
+  // RECURRENCE-ID (RFC 5545 §3.8.4.4), which the spec defines for VTODO exactly as
+  // for VEVENT. Non-empty ONLY on an override VTODO that replaces one instance of a
+  // recurring to-do (see `rrule`). Carried so Parse(Build(x)) does not turn one
+  // edited instance into two independent to-dos.
+  string recurrence_id = 26;
+  // RECURRENCE-ID's TZID parameter, mirroring `dtstart_tzid`.
+  string recurrence_id_tzid = 27;
+  // RECURRENCE-ID's RANGE parameter (RFC 5545 §3.2.13). Empty, or "THISANDFUTURE".
+  string recurrence_id_range = 28;
 }
 
 // A VJOURNAL (RFC 5545 §3.6.3) — a dated journal/note entry.
@@ -226,6 +235,14 @@ message ICalJournal {
   string dtstamp = 13;
   string classification = 14;
   string url = 15;
+  // RECURRENCE-ID (RFC 5545 §3.8.4.4), which the spec defines for VJOURNAL as well
+  // as VEVENT/VTODO. Carried purely for round-trip fidelity — this package models no
+  // recurrence rule for journals, so nothing expands or suppresses them.
+  string recurrence_id = 16;
+  // RECURRENCE-ID's TZID parameter, mirroring `dtstart_tzid`.
+  string recurrence_id_tzid = 17;
+  // RECURRENCE-ID's RANGE parameter (RFC 5545 §3.2.13). Empty, or "THISANDFUTURE".
+  string recurrence_id_range = 18;
 }
 
 // The canonical calendar-file envelope: the whole content of a .ics VCALENDAR,
@@ -309,10 +326,19 @@ message ICalEventList {
 // RRULE string.
 message ICalExpandInput {
   string ics_text = 1;
-  // Window start, INCLUSIVE. RFC 5545 form string.
+  // Window start. RFC 5545 form string. An occurrence is returned when it
+  // OVERLAPS [window_start, window_end] — a long event straddling the window is
+  // reported, not just one starting inside it.
+  //
+  // Boundary rule, stated exactly because it differs by event kind and this is
+  // inherited ical4j behaviour rather than a choice: an occurrence of a RECURRING
+  // VEVENT that merely TOUCHES a bound (ends exactly at window_start, or starts
+  // exactly at window_end) IS returned, while a non-recurring VEVENT in the same
+  // position is NOT. If you are computing free/busy, treat a touching occurrence
+  // as non-conflicting yourself rather than relying on the filter to drop it.
   string window_start = 2;
-  // Window end, EXCLUSIVE. RFC 5545 form string. Must be strictly after
-  // `window_start`.
+  // Window end. RFC 5545 form string. Must be strictly after `window_start`.
+  // See `window_start` for the overlap and boundary rules.
   string window_end = 3;
   // Cap on returned occurrences, across all events combined. 0 means the
   // default of 500; maximum accepted is 5000. A ceiling, not a promise: a
@@ -323,9 +349,15 @@ message ICalExpandInput {
   // are omitted — a cancelled instance does not happen, so a free/busy or
   // conflict consumer must not see it. Set true to receive them anyway, each
   // flagged `status: "CANCELLED"`, e.g. to render a struck-through agenda.
-  // Applies both to a whole VEVENT marked STATUS:CANCELLED (the entire series
-  // is dropped) and to a single cancelled RECURRENCE-ID override instance
+  // Applies to a whole VEVENT marked STATUS:CANCELLED (its series contributes
+  // no occurrences) and to a single cancelled RECURRENCE-ID override instance
   // (only that instance is dropped, and the master's slot stays vacated).
+  //
+  // One deliberate asymmetry: an override instance is judged on ITS OWN status,
+  // not the master's. So a cancelled series that still carries an explicitly
+  // CONFIRMED override instance reports that one instance. Suppressing it would
+  // discard an occurrence the calendar states is happening, and losing a real
+  // meeting is a worse failure than reporting a surprising one.
   bool include_cancelled = 6;
 }
 
@@ -349,12 +381,16 @@ message ICalEventOccurrence {
   // the ORIGINAL slot, which is exactly what `occurrence_start` is not: for a
   // moved instance the two differ, and the original slot is FREE.
   string recurrence_id = 7;
-  // True when this occurrence comes from a RECURRENCE-ID override VEVENT rather
-  // than from the master series — i.e. the calendar owner edited this single
-  // instance (moved it, renamed it, or cancelled it). The master's occurrence at
-  // `recurrence_id` is suppressed and is NOT also returned; expanding the RRULE
-  // and returning both would double-count one real meeting and report the
-  // vacated slot as busy.
+  // True when this occurrence's details come from a RECURRENCE-ID override rather
+  // than from the master series — i.e. the calendar owner edited it. Two cases set
+  // it: the override VEVENT the owner actually authored, and (for a
+  // RANGE=THISANDFUTURE override) each LATER instance the edit propagates to,
+  // which is materialized from the master series but takes the override's
+  // start-offset, duration, summary, location and status.
+  //
+  // In both cases the master's own occurrence at `recurrence_id` is suppressed and
+  // is NOT also returned; expanding the RRULE and returning both would
+  // double-count one real meeting and report the vacated slot as busy.
   bool is_override = 8;
   // The occurrence's effective RFC 5545 STATUS (e.g. "CONFIRMED", "TENTATIVE",
   // "CANCELLED"), taken from the override VEVENT when this is an override and

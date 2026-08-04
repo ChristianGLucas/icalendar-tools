@@ -29,11 +29,12 @@ public class ExpandOccurrences {
     // without having to reimplement RRULE/RDATE/EXDATE merging ourselves.
     private static final long MAX_WINDOW_MILLIS = 50L * 365 * 24 * 3600 * 1000;
     // A RANGE=THISANDFUTURE override shifts every later instance by (its DTSTART -
-    // its RECURRENCE-ID). To catch instances that shift ACROSS a window edge we must
-    // expand the master over a window padded by that delta — so the delta itself has
-    // to be bounded, or a hostile/broken calendar could pad the expansion without
-    // limit. One year of padding covers every realistic reschedule.
-    private static final long MAX_SHIFT_MILLIS = 366L * 24 * 3600 * 1000;
+    // its RECURRENCE-ID). To catch instances that shift ACROSS a window edge, the
+    // master is expanded over a window padded by that delta — so the PADDING has to
+    // be bounded, or a hostile or broken calendar could widen the expansion without
+    // limit. The bound applies to the padding ONLY, never to the shift itself: this
+    // is a cost ceiling, not a correctness one.
+    private static final long MAX_PAD_MILLIS = 366L * 24 * 3600 * 1000;
 
     private static final String CANCELLED = "CANCELLED";
 
@@ -62,7 +63,10 @@ public class ExpandOccurrences {
      *
      * <p>{@code RANGE=THISANDFUTURE} is honoured too: the override governs its own
      * instance and every later one, which are shifted by the override's
-     * (DTSTART − RECURRENCE-ID) delta and take its summary/location/status.
+     * (DTSTART − RECURRENCE-ID) delta and take its summary/location/status — and
+     * its DURATION, which RFC 5545 §3.8.4.4 propagates alongside the reschedule
+     * ("if the duration of the given recurrence instance is modified, then all
+     * subsequen[t] instances are also modified to have this same duration").
      *
      * <p>Capped at {@code limit} occurrences total (default 500, max 5000); a dense
      * window flags truncated=true instead of running unbounded.
@@ -127,24 +131,29 @@ public class ExpandOccurrences {
                     if (!includeCancelled && CANCELLED.equalsIgnoreCase(ov.status)) {
                         continue; // cancelled instance: slot already vacated, nothing happens here
                     }
-                    // An override VEVENT has no recurrence of its own, so this expands
-                    // to at most its single DTSTART/DTEND — but routing it through
-                    // calculateRecurrenceSet keeps the window filter (overlap, TZID-aware,
-                    // half-open) byte-identical to the master path.
-                    for (Object po : ov.vevent.calculateRecurrenceSet(new Period(ws, we))) {
-                        Period p = (Period) po;
-                        candidates.add(new Candidate(p.getStart().getTime(), ICalEventOccurrence.newBuilder()
-                                .setUid(ov.uid)
-                                .setSummary(ov.summary)
-                                .setLocation(ov.location)
-                                .setOccurrenceStart(String.valueOf(p.getStart()))
-                                .setOccurrenceEnd(p.getEnd() == null ? "" : String.valueOf(p.getEnd()))
-                                .setIsRecurring(true)
-                                .setRecurrenceId(ov.recurrenceIdValue)
-                                .setIsOverride(true)
-                                .setStatus(ov.status)
-                                .build()));
+                    // Filtered with THIS node's predicate rather than by handing the window
+                    // to calculateRecurrenceSet. An override VEVENT is a NON-recurring
+                    // component, and ical4j applies a half-open window rule to those but a
+                    // closed one to recurring components — so delegating here would make an
+                    // authored override and its own RANGE=THISANDFUTURE siblings disagree at
+                    // the window edges, inside a single series. Everything belonging to a
+                    // recurring series uses one rule: the recurring one.
+                    long start = ov.startMillis;
+                    long end = ov.hasDuration ? start + ov.durationMillis : start;
+                    if (!overlapsWindow(start, end, ws, we)) {
+                        continue;
                     }
+                    candidates.add(new Candidate(start, ICalEventOccurrence.newBuilder()
+                            .setUid(ov.uid)
+                            .setSummary(ov.summary)
+                            .setLocation(ov.location)
+                            .setOccurrenceStart(ov.startValue)
+                            .setOccurrenceEnd(ov.endValue)
+                            .setIsRecurring(true)
+                            .setRecurrenceId(ov.recurrenceIdValue)
+                            .setIsOverride(true)
+                            .setStatus(ov.status)
+                            .build()));
                 }
             }
 
@@ -161,9 +170,25 @@ public class ExpandOccurrences {
                 // window edge in either direction — so expand over a padded window and
                 // re-filter after shifting. Zero padding when no such override exists,
                 // which is the overwhelmingly common case.
+                //
+                // The pad is a COST bound and is capped; the shift itself is a
+                // CORRECTNESS value and never is. Clamping the shift instead would
+                // silently report the vacated slots as busy — reintroducing the exact
+                // phantom this node exists to remove — so an implausibly distant
+                // reschedule may under-report at the window edges, but it will never
+                // claim the owner is busy at a time they demonstrably freed.
+                // The pad must cover the SHIFT plus the override's DURATION, not the
+                // shift alone. A master occurrence can end up overlapping the window
+                // purely because the override lengthened it: shift a 09:00–10:00
+                // instance by +2h and stretch it to 90 minutes and it runs 11:00–12:30,
+                // which overlaps a 12:05–12:25 query even though its shifted START is
+                // before the window and its unshifted start is 3h before that.
                 long pad = 0;
                 for (Override ov : overrides) {
-                    if (ov.thisAndFuture) pad = Math.max(pad, Math.abs(ov.shiftMillis));
+                    if (ov.thisAndFuture) {
+                        long reach = Math.abs(ov.shiftMillis) + (ov.hasDuration ? ov.durationMillis : 0);
+                        pad = Math.max(pad, Math.min(reach, MAX_PAD_MILLIS));
+                    }
                 }
                 Period period = pad == 0
                         ? new Period(ws, we)
@@ -200,21 +225,40 @@ public class ExpandOccurrences {
                     }
 
                     // Governed by a RANGE=THISANDFUTURE override: shift by its delta and
-                    // adopt its summary/location/status.
+                    // adopt its summary/location/status — AND its duration.
+                    //
+                    // RFC 5545 §3.8.4.4: "When the given recurrence instance is
+                    // rescheduled, all subsequent instances are also rescheduled by the
+                    // same time difference. […] Similarly, if the duration of the given
+                    // recurrence instance is modified, then all subsequen[t] instances are
+                    // also modified to have this same duration."
+                    //
+                    // Carrying the MASTER's duration forward instead would misreport in
+                    // both directions: a shortened series would keep reporting the minutes
+                    // the owner gave back as busy (the same phantom class this release
+                    // removes), and a lengthened one would report free time over a real
+                    // meeting — the more dangerous error, since a booking agent acts on it.
                     if (!includeCancelled && CANCELLED.equalsIgnoreCase(future.status)) {
                         continue;
                     }
                     long shiftedStart = startMillis + future.shiftMillis;
-                    long shiftedEnd = endMillis(p, startMillis) + future.shiftMillis;
-                    if (!overlapsWindow(shiftedStart, shiftedEnd, ws, we)) {
+                    boolean hasEnd = future.hasDuration || p.getEnd() != null;
+                    long shiftedEnd = future.hasDuration
+                            ? shiftedStart + future.durationMillis
+                            : endMillis(p, startMillis) + future.shiftMillis;
+                    if (!overlapsWindow(shiftedStart, hasEnd ? shiftedEnd : shiftedStart, ws, we)) {
                         continue;
                     }
+                    // Rendered in the SAME form as the master occurrence it displaces, not
+                    // forced to UTC: mixing forms inside one series hands the consumer two
+                    // rows for the same meeting in incompatible notations, with no field to
+                    // tell them apart.
                     candidates.add(new Candidate(shiftedStart, ICalEventOccurrence.newBuilder()
                             .setUid(conv.getUid())
                             .setSummary(future.summary)
                             .setLocation(future.location)
-                            .setOccurrenceStart(utcValue(shiftedStart))
-                            .setOccurrenceEnd(p.getEnd() == null ? "" : utcValue(shiftedEnd))
+                            .setOccurrenceStart(renderLike(p.getStart(), shiftedStart))
+                            .setOccurrenceEnd(hasEnd ? renderLike(p.getStart(), shiftedEnd) : "")
                             .setIsRecurring(recurring)
                             .setRecurrenceId(startValue)
                             .setIsOverride(true)
@@ -258,10 +302,19 @@ public class ExpandOccurrences {
         final boolean thisAndFuture;
         /** DTSTART − RECURRENCE-ID: how far THISANDFUTURE moves each later instance. */
         final long shiftMillis;
-        final VEvent vevent;
+        /** This override's own DTSTART, as epoch millis and as its literal value. */
+        final long startMillis;
+        final String startValue;
+        /** This override's own end. {@code hasDuration} is false when it has neither
+         *  a DTEND nor a DURATION to derive one from. */
+        final boolean hasDuration;
+        final long durationMillis;
+        final String endValue;
 
         Override(String uid, String summary, String location, String status, long recurrenceIdMillis,
-                 String recurrenceIdValue, boolean thisAndFuture, long shiftMillis, VEvent vevent) {
+                 String recurrenceIdValue, boolean thisAndFuture, long shiftMillis,
+                 long startMillis, String startValue, boolean hasDuration, long durationMillis,
+                 String endValue) {
             this.uid = uid;
             this.summary = summary;
             this.location = location;
@@ -270,7 +323,11 @@ public class ExpandOccurrences {
             this.recurrenceIdValue = recurrenceIdValue;
             this.thisAndFuture = thisAndFuture;
             this.shiftMillis = shiftMillis;
-            this.vevent = vevent;
+            this.startMillis = startMillis;
+            this.startValue = startValue;
+            this.hasDuration = hasDuration;
+            this.durationMillis = durationMillis;
+            this.endValue = endValue;
         }
     }
 
@@ -288,26 +345,33 @@ public class ExpandOccurrences {
         if (ridDate == null) {
             return null; // malformed RECURRENCE-ID: treat as a master rather than silently dropping it
         }
+        net.fortuna.ical4j.model.Date dtstart =
+                v.getStartDate() == null ? null : v.getStartDate().getDate();
+        if (dtstart == null) {
+            // An override with no DTSTART names an instant to replace but supplies no
+            // replacement. Honouring the suppression would DELETE a real meeting and put
+            // nothing back, so this malformed component is treated as a non-override and
+            // the master's instance is left standing.
+            return null;
+        }
         ICalEvent conv = ICal4jHelper.eventOf(v);
 
-        // RANGE=THISANDFUTURE (RFC 5545 §3.2.13) is the only defined RANGE value.
+        // RANGE=THISANDFUTURE (RFC 5545 §3.2.13) is the only RANGE value this revision
+        // of iCalendar defines; THISANDPRIOR is deprecated and MUST NOT be generated.
         net.fortuna.ical4j.model.Parameter range = p.getParameter(net.fortuna.ical4j.model.Parameter.RANGE);
         boolean thisAndFuture = range != null && "THISANDFUTURE".equalsIgnoreCase(String.valueOf(range.getValue()));
 
-        long shift = 0;
-        if (thisAndFuture) {
-            net.fortuna.ical4j.model.Date dtstart =
-                    v.getStartDate() == null ? null : v.getStartDate().getDate();
-            if (dtstart != null) {
-                shift = dtstart.getTime() - ridDate.getTime();
-                // Bound the padding a hostile/broken delta could force on the expansion.
-                if (Math.abs(shift) > MAX_SHIFT_MILLIS) {
-                    shift = 0;
-                }
-            }
-        }
+        long shift = thisAndFuture ? dtstart.getTime() - ridDate.getTime() : 0;
+
+        net.fortuna.ical4j.model.Date dtend =
+                v.getEndDate(true) == null ? null : v.getEndDate(true).getDate();
+        boolean hasDuration = dtend != null;
+        long durationMillis = hasDuration ? dtend.getTime() - dtstart.getTime() : 0;
+
         return new Override(conv.getUid(), conv.getSummary(), conv.getLocation(), conv.getStatus(),
-                ridDate.getTime(), String.valueOf(ridDate), thisAndFuture, shift, v);
+                ridDate.getTime(), String.valueOf(ridDate), thisAndFuture, shift,
+                dtstart.getTime(), String.valueOf(dtstart), hasDuration, durationMillis,
+                hasDuration ? String.valueOf(dtend) : "");
     }
 
     /**
@@ -349,14 +413,31 @@ public class ExpandOccurrences {
     }
 
     /**
-     * Renders a shifted instant as an RFC 5545 UTC DATE-TIME ("…Z"). A shifted
-     * occurrence is a synthesized instant with no source property to copy a TZID
-     * from, so UTC is the only unambiguous form available.
+     * Renders a shifted instant in the SAME RFC 5545 form as the master occurrence it
+     * displaces — UTC against a UTC series, the master's TZID against a zoned one, a
+     * bare DATE against an all-day one.
+     *
+     * <p>This is not cosmetic. {@code ICalEventOccurrence} has no zone field, so the
+     * form of {@code occurrence_start} is the only thing telling a consumer how to
+     * read it. Emitting shifted instants as UTC while their unshifted siblings stay
+     * local puts two rows for the same recurring meeting into one response in
+     * incompatible notations, with nothing to distinguish them — a renderer or a
+     * slot-finder reads the local digits as UTC and lands hours off.
      */
-    private static String utcValue(long millis) {
-        DateTime dt = new DateTime(millis);
-        dt.setUtc(true);
-        return String.valueOf(dt);
+    private static String renderLike(net.fortuna.ical4j.model.Date reference, long millis) {
+        if (reference instanceof DateTime) {
+            DateTime ref = (DateTime) reference;
+            DateTime out = new DateTime(millis);
+            if (ref.isUtc()) {
+                out.setUtc(true);
+            } else if (ref.getTimeZone() != null) {
+                out.setTimeZone(ref.getTimeZone());
+            }
+            // Neither UTC nor zoned: RFC 5545 floating time, which is exactly what a
+            // bare DateTime renders as. Nothing more to set.
+            return String.valueOf(out);
+        }
+        return String.valueOf(new net.fortuna.ical4j.model.Date(millis));
     }
 
     private static long endMillis(Period p, long startMillis) {
